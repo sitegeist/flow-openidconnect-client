@@ -20,6 +20,15 @@ final class JwkSet
     }
 
     /**
+     * @param array<int,Jwk> $items
+     * @param array<int,string> $rejections
+     */
+    public static function create(array $items, array $rejections = []): self
+    {
+        return new self($items, $rejections);
+    }
+
+    /**
      * @param array<int,array<string,mixed>> $values
      */
     public static function fromArray(array $values): self

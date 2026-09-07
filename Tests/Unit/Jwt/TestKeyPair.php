@@ -33,7 +33,7 @@ final class TestKeyPair
     ) {
     }
 
-    public static function create(SupportedAlgorithm $algorithm = SupportedAlgorithm::ES256): self
+    public static function create(SupportedAlgorithm $algorithm): self
     {
         [$privateKey, $publicJwk] = match ($algorithm) {
             /** Signer\Rsa loads the private key through OpenSSL, hence PKCS8 */
