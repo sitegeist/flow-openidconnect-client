@@ -19,18 +19,14 @@ class SupportedAlgorithmTest extends TestCase
         ?string $curve,
         ?SupportedAlgorithm $expectedAlgorithm,
         ?\Throwable $expectedException,
-        ?int $expectedExceptionCode,
     ): void {
         try {
             $actualAlgorithm = SupportedAlgorithm::fromKeyTypeAndCurve($keyType, $curve);
             Assert::assertNull($expectedException);
-            Assert::assertSame($expectedAlgorithm, $actualAlgorithm);
+            Assert::assertSame($expectedAlgorithm, $actualAlgorithm, $actualAlgorithm->value);
         } catch (\Throwable $actualException) {
-            Assert::assertNull($expectedAlgorithm);
-            Assert::assertIsString($expectedException);
             Assert::assertEquals($expectedException, $actualException);
-            Assert::assertIsInt($expectedExceptionCode);
-            Assert::assertSame($expectedExceptionCode, $actualException->getCode());
+            Assert::assertNull($expectedAlgorithm);
         }
     }
 
@@ -80,11 +76,25 @@ class SupportedAlgorithmTest extends TestCase
             'expectedException' => JwkValidationFailed::becauseOKPCurveIsNotSupported('X25519'),
         ];
 
+        yield 'OKP key with valid curve' => [
+            'keyType' => 'OKP',
+            'curve' => 'Ed25519',
+            'expectedAlgorithm' => SupportedAlgorithm::EdDSA,
+            'expectedException' => null,
+        ];
+
         yield 'unsupported key type' => [
             'keyType' => 'okp',
             'curve' => null,
             'expectedAlgorithm' => null,
-            'expectedException' => JwkValidationFailed::becauseKeyTypeIsNotSupported('X25519'),
+            'expectedException' => JwkValidationFailed::becauseTheKeyTypeIsNotSupported('okp'),
+        ];
+
+        yield 'RSA default' => [
+            'keyType' => 'RSA',
+            'curve' => null,
+            'expectedAlgorithm' => SupportedAlgorithm::RS256,
+            'expectedException' => null,
         ];
     }
 }

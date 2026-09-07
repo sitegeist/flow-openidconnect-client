@@ -38,19 +38,19 @@ final class JwkValidationFailed extends \Exception
         );
     }
 
-    public static function becauseKeyTypeIsNotSupported(string $keyType): self
-    {
-        return new self(
-            'Requested key type ' . $keyType . ' is not supported for signature verification',
-            1787912525,
-        );
-    }
-
     public static function becauseAlgorithmIsNotSupported(string $algorithm): self
     {
         return new self(
             'Requested algorithm ' . $algorithm . ' is not supported for signature verification',
             1787912440,
+        );
+    }
+
+    public static function becauseTheAlgorithmDoesNotMatchTheKeyType(string $algorithm, string $keyType): self
+    {
+        return new self(
+            'Requested algorithm ' . $algorithm . ' does not match the requested key type ' . $keyType,
+            1788786499,
         );
     }
 }

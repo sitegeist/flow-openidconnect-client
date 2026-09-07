@@ -47,7 +47,9 @@ final class Jwk
             } catch (\ValueError) {
                 throw JwkValidationFailed::becauseAlgorithmIsNotSupported($rawAlgorithm);
             }
-
+            if (!$algorithm->matchesKeyType($keyType)) {
+                throw JwkValidationFailed::becauseTheAlgorithmDoesNotMatchTheKeyType($algorithm->value, $keyType);
+            }
 
             return new self(
                 intendedUse: self::extractString($values['use'] ?? null),
@@ -57,7 +59,7 @@ final class Jwk
                     'RSA' => RSA::loadPublicKeyFormat('JWK', $json)->toString('PKCS8'),
                     'OKP' => EC::loadPublicKeyFormat('JWK', $json)->toString('libsodium'),
                     'EC' => EC::loadPublicKeyFormat('JWK', $json)->toString('PKCS8'),
-                    default => throw JwkValidationFailed::becauseTheKeyTypeIsNotSupported($values['kty']),
+                    default => throw JwkValidationFailed::becauseTheKeyTypeIsNotSupported($keyType),
                 }
             );
         } catch (JwkValidationFailed $exception) {
@@ -69,6 +71,9 @@ final class Jwk
 
     private static function extractString(mixed $value): ?string
     {
+        if (is_numeric($value)) {
+            $value = (string)$value;
+        }
         return is_string($value) ? $value : null;
     }
 

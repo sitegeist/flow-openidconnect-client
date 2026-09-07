@@ -38,11 +38,10 @@ enum SupportedAlgorithm: string
                 default => throw JwkValidationFailed::becauseOKPCurveIsNotSupported($curve),
             },
             /**
-             * @see https://openid.net/specs/openid-connect-registration-1_0.html#ClientMetadata
-             *      id_token_signed_response_alg — "The default, if omitted, is RS256."
+             * We explicitly default to RS256 if no algorithm is provided in the JWK
              */
             'RSA' => self::RS256,
-            default => throw JwkValidationFailed::becauseKeyTypeIsNotSupported($keyType),
+            default => throw JwkValidationFailed::becauseTheKeyTypeIsNotSupported($keyType),
         };
     }
 
@@ -56,6 +55,15 @@ enum SupportedAlgorithm: string
             self::ES384 => new Signer\Ecdsa\Sha384(),
             self::ES512 => new Signer\Ecdsa\Sha512(),
             self::EdDSA => new Signer\Eddsa(),
+        };
+    }
+
+    public function matchesKeyType(string $keyType): bool
+    {
+        return match($this) {
+            self::RS256, self::RS384, self::RS512 => $keyType === 'RSA',
+            self::ES256, self::ES384, self::ES512 => $keyType === 'EC',
+            self::EdDSA => $keyType === 'OKP',
         };
     }
 }

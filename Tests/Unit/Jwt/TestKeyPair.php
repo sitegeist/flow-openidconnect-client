@@ -13,106 +13,65 @@ use phpseclib3\Crypt\EC;
 use phpseclib3\Crypt\RSA;
 
 /**
- * A key pair generated at runtime, which hands out its public half as a JWK and
- * signs arbitrary JWTs with its private half.
+ * A key pair generated at runtime, which hands out its public half as bare JWK
+ * key material and signs arbitrary JWTs with its private half.
  *
- * Generating the keys per test run keeps private keys out of the repository and
- * makes fixtures possible which no static key material could express, such as a
- * token signed by a key the JWK set does not contain.
+ * Deliberately knows nothing about JWK metadata such as "kid", "use" or "alg":
+ * tests compose those themselves, so that a fixture is always built by adding
+ * members rather than by removing the ones this class guessed at.
  */
 final class TestKeyPair
 {
     /**
      * @param non-empty-string $privateKey
-     * @param array<string,mixed> $publicJwk
+     * @param array<string,mixed> $publicJwk The bare key material, i.e. "kty" plus "crv"/"x"/"y" or "n"/"e"
      */
     private function __construct(
         public readonly SupportedAlgorithm $algorithm,
-        public readonly ?string $keyId,
         private readonly string $privateKey,
-        private readonly array $publicJwk,
+        public readonly array $publicJwk,
     ) {
     }
 
-    public static function create(
-        SupportedAlgorithm $algorithm = SupportedAlgorithm::ES256,
-        ?string $keyId = 'test-key',
-    ): self {
-        /** @var array<string,string> $jwkAttributes phpseclib merges these into the exported JWK */
-        $jwkAttributes = array_filter([
-            'kid' => $keyId,
-            'use' => 'sig',
-            'alg' => $algorithm->value,
-        ]);
-
-        [$privateKey, $publicKeyJwk] = match ($algorithm) {
+    public static function create(SupportedAlgorithm $algorithm = SupportedAlgorithm::ES256): self
+    {
+        [$privateKey, $publicJwk] = match ($algorithm) {
             /** Signer\Rsa loads the private key through OpenSSL, hence PKCS8 */
             SupportedAlgorithm::RS256,
             SupportedAlgorithm::RS384,
-            SupportedAlgorithm::RS512 => self::export(RSA::createKey(2048), 'PKCS8', $jwkAttributes),
-            SupportedAlgorithm::ES256 => self::export(EC::createKey('secp256r1'), 'PKCS8', $jwkAttributes),
-            SupportedAlgorithm::ES384 => self::export(EC::createKey('secp384r1'), 'PKCS8', $jwkAttributes),
-            SupportedAlgorithm::ES512 => self::export(EC::createKey('secp521r1'), 'PKCS8', $jwkAttributes),
+            SupportedAlgorithm::RS512 => self::export(RSA::createKey(2048), 'PKCS8'),
+            SupportedAlgorithm::ES256 => self::export(EC::createKey('secp256r1'), 'PKCS8'),
+            SupportedAlgorithm::ES384 => self::export(EC::createKey('secp384r1'), 'PKCS8'),
+            SupportedAlgorithm::ES512 => self::export(EC::createKey('secp521r1'), 'PKCS8'),
             /** Signer\Eddsa expects the raw key material rather than PKCS8 */
-            SupportedAlgorithm::EdDSA => self::export(EC::createKey('Ed25519'), 'libsodium', $jwkAttributes),
+            SupportedAlgorithm::EdDSA => self::export(EC::createKey('Ed25519'), 'libsodium'),
         };
 
-        return new self($algorithm, $keyId, $privateKey, $publicKeyJwk);
+        return new self($algorithm, $privateKey, $publicJwk);
     }
 
     /**
-     * @param array<string,string> $jwkAttributes
      * @return array{0:non-empty-string,1:array<string,mixed>}
      */
-    private static function export(RSA\PrivateKey|EC\PrivateKey $key, string $privateKeyFormat, array $jwkAttributes): array
+    private static function export(RSA\PrivateKey|EC\PrivateKey $key, string $privateKeyFormat): array
     {
-        $jwkSet = \json_decode($key->getPublicKey()->toString('JWK', $jwkAttributes), true, 512, JSON_THROW_ON_ERROR);
+        $jwkSet = \json_decode($key->getPublicKey()->toString('JWK'), true, 512, JSON_THROW_ON_ERROR);
 
         return [$key->toString($privateKeyFormat), $jwkSet['keys'][0]];
     }
 
     /**
-     * The public key as a JWK, ready to be passed to JwkSet::fromArray().
+     * A JWT signed with the private half. Claims and headers are the caller's
+     * business, because Builder rejects registered claims passed as plain
+     * key-value pairs and every test needs a different set of them.
      *
-     * @param array<string,mixed> $overrides To build rejected keys, e.g. ['use' => 'enc']
-     * @return array<string,mixed>
+     * @param (callable(Builder):Builder)|null $configure
      */
-    public function publicJwk(array $overrides = []): array
+    public function sign(?callable $configure = null): string
     {
-        return $overrides + $this->publicJwk;
-    }
-
-    /**
-     * @param array<int,string> $audiences
-     * @param string|null $keyIdHeader The "kid" header, null to omit it entirely
-     * @param array<string,mixed> $claims Additional claims
-     */
-    public function sign(
-        string $issuer = 'https://issuer.example',
-        array $audiences = ['client-id'],
-        ?string $keyIdHeader = 'test-key',
-        ?\DateTimeImmutable $expiresAt = null,
-        array $claims = [],
-    ): string {
         $builder = new Builder(new JoseEncoder(), ChainedFormatter::default());
 
-        if ($keyIdHeader !== null) {
-            $builder = $builder->withHeader('kid', $keyIdHeader);
-        }
-
-        $builder = $builder
-            ->issuedBy($issuer)
-            ->issuedAt(new \DateTimeImmutable('now'))
-            ->expiresAt($expiresAt ?? new \DateTimeImmutable('+1 hour'));
-
-        foreach ($audiences as $audience) {
-            $builder = $builder->permittedFor($audience);
-        }
-        foreach ($claims as $name => $value) {
-            $builder = $builder->withClaim($name, $value);
-        }
-
-        return $builder
+        return ($configure === null ? $builder : $configure($builder))
             ->getToken($this->algorithm->getSigner(), InMemory::plainText($this->privateKey))
             ->toString();
     }

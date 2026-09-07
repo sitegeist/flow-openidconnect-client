@@ -55,7 +55,8 @@ class OpenIdConnectClientTest extends TestCase
         'services' => [
             'test' => [
                 'options' => [
-                    'jwksUri' => 'http://localhost'
+                    'jwksUri' => 'http://localhost',
+                    'issuer' => 'test',
                 ]
             ]
         ]
