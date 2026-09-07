@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Flownative\OpenIdConnect\Client\Authentication;
 
 use Flownative\OpenIdConnect\Client\AuthenticationException;
+use Flownative\OpenIdConnect\Client\BackChannelLogout\AuthenticationRevocationRegistry;
+use Flownative\OpenIdConnect\Client\BackChannelLogout\AuthenticationRevocationTag;
 use Flownative\OpenIdConnect\Client\ConnectionException;
 use Flownative\OpenIdConnect\Client\IdentityToken;
 use Flownative\OpenIdConnect\Client\OpenIdConnectClient;
@@ -59,6 +61,12 @@ final class OpenIdConnectProvider extends AbstractProvider
     protected $session;
 
     /**
+     * @Flow\Inject
+     * @var AuthenticationRevocationRegistry
+     */
+    protected $authenticationRevocationRegistry;
+
+    /**
      * @return array
      */
     public function getTokenClassNames(): array
@@ -96,7 +104,8 @@ final class OpenIdConnectProvider extends AbstractProvider
             $this->options['jwtCookieName'] = 'flownative_oidc_jwt';
         }
         try {
-            $jwks = (new OpenIdConnectClient($this->options['serviceName']))->getJwks();
+            $client = new OpenIdConnectClient($this->getServiceName());
+            $jwks = $client->getJwks();
             $identityToken = $authenticationToken->extractIdentityTokenFromRequest($this->options['jwtCookieName']);
 
             try {
@@ -106,6 +115,23 @@ final class OpenIdConnectProvider extends AbstractProvider
             }
             if (!$hasValidSignature) {
                 throw new SecurityException('Open ID Connect: The identity token provided by the OIDC provider had an invalid signature', 1561479176);
+            }
+
+            $issuer = $client->getOptions()['issuer'] ?? throw new \RuntimeException('Issuer undefined for service ' . $this->getServiceName());
+            $sessionId = $identityToken->values['sid'] ?? null;
+            $sessionRevocationTag = is_string($sessionId) ? AuthenticationRevocationTag::forSessionId($issuer, $sessionId) : null;
+            if ($sessionRevocationTag && $this->authenticationRevocationRegistry->has($sessionRevocationTag)) {
+                $this->logger->notice('Authentication was revoked by session', LogEnvironment::fromMethodName(__METHOD__));
+                $authenticationToken->setAuthenticationStatus(TokenInterface::AUTHENTICATION_NEEDED);
+                return;
+            }
+
+            $subject = $identityToken->values['sub'] ?? null;
+            $subjectRevocationTag = is_string($subject) ? AuthenticationRevocationTag::forSubject($issuer, $subject) : null;
+            if ($subjectRevocationTag && $this->authenticationRevocationRegistry->has($subjectRevocationTag)) {
+                $this->logger->notice('Authentication was revoked by subject', LogEnvironment::fromMethodName(__METHOD__));
+                $authenticationToken->setAuthenticationStatus(TokenInterface::AUTHENTICATION_NEEDED);
+                return;
             }
 
             $refreshToken = $authenticationToken->getRefreshToken();
@@ -120,6 +146,12 @@ final class OpenIdConnectProvider extends AbstractProvider
                 if ($this->session->isStarted()) {
                     $this->logger->debug('OpenID Connect: Set refresh token in session', LogEnvironment::fromMethodName(__METHOD__));
                     $this->session->putData('flownative_oidc_refresh', $refreshToken);
+                    if ($sessionRevocationTag) {
+                        $this->session->addTag($sessionRevocationTag->value);
+                    }
+                    if ($subjectRevocationTag) {
+                        $this->session->addTag($subjectRevocationTag->value);
+                    }
                 } else {
                     $this->logger->debug('OpenID Connect: Could not store refresh token in session', LogEnvironment::fromMethodName(__METHOD__));
                 }
@@ -174,7 +206,8 @@ final class OpenIdConnectProvider extends AbstractProvider
             return;
         }
 
-        if (isset($this->options['audience']) && !$this->audienceMatches($this->options['audience'], $identityToken)) {
+        $expectedAudience = $this->options['audience'] ?? $client->getOptions()['clientId'];
+        if (!$this->audienceMatches($expectedAudience, $identityToken)) {
             throw new AuthenticationException('Open ID Connect: The identity token provided by the OIDC provider was not issued for this audience', 1616568739);
         }
 
@@ -247,8 +280,14 @@ final class OpenIdConnectProvider extends AbstractProvider
             $this->logger->warning(sprintf('OpenID Connect: The identity token (%s) contain no "aud" value', $identityToken->values['sub'] ?? '?'), LogEnvironment::fromMethodName(__METHOD__));
             return false;
         }
-        if ($expectedAudience !== $identityToken->values['aud']) {
-            $this->logger->warning(sprintf('OpenID Connect: The identity token (%s) was intended for audience "%s" but this authentication provider is configured as audience "%s"', $identityToken->values['sub'], $identityToken->values['aud'], $expectedAudience), LogEnvironment::fromMethodName(__METHOD__));
+        $audiences = (array)$identityToken->values['aud'];
+        if (!in_array($expectedAudience, $audiences, true)) {
+            $this->logger->warning(
+                'OpenID Connect: The identity token (' . ($identityToken->values['sub'] ?? '?') . ') was intended for audience(s) "'
+                    . implode(', ', $audiences) . '" but this authentication provider is configured as audience "'
+                    . $expectedAudience . '"',
+                LogEnvironment::fromMethodName(__METHOD__),
+            );
             return false;
         }
         return true;

@@ -9,3 +9,8 @@ Flownative_OpenIdConnect_Client_JWKs:
   backend: Neos\Cache\Backend\FileBackend
   backendOptions:
     defaultLifetime: 3600
+
+Flownative_OpenIdConnect_Client_AuthenticationRevocations:
+  frontend: Neos\Cache\Frontend\VariableFrontend
+  backend: Neos\Cache\Backend\FileBackend
+  persistent: true

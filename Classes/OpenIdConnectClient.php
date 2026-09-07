@@ -8,6 +8,10 @@ use Flownative\OAuth2\Client\Authorization;
 use Flownative\OAuth2\Client\OAuthClientException;
 use Flownative\OpenIdConnect\Client\Authentication\OpenIdConnectToken;
 use Flownative\OpenIdConnect\Client\Authentication\TokenArguments;
+use Flownative\OpenIdConnect\Client\Jwt\JwkSet;
+use Flownative\OpenIdConnect\Client\Jwt\JwtMissesSignatureKey;
+use Flownative\OpenIdConnect\Client\Jwt\JwtVerification;
+use Flownative\OpenIdConnect\Client\Jwt\VerifiedJwt;
 use GuzzleHttp\Client as HttpClient;
 use GuzzleHttp\Exception\GuzzleException;
 use League\OAuth2\Client\Provider\Exception\IdentityProviderException;
@@ -81,7 +85,9 @@ final class OpenIdConnectClient
         'tokenEndpoint' => '',
         'userInfoEndpoint' => '',
         'jwksUri' => '',
-        'scopesSupported' => ''
+        'scopesSupported' => '',
+        'audience' => '',
+        'trustedAudiences' => [],
     ];
 
     /**
@@ -124,8 +130,35 @@ final class OpenIdConnectClient
             throw new ConfigurationException(sprintf('OpenID Connect Client: Invalid configuration for service "%s", options must be an array.', $this->serviceName), 1554914157);
         }
         $this->options = Arrays::arrayMergeRecursiveOverrule(self::DEFAULT_OPTIONS, $this->settings['services'][$this->serviceName]['options']);
+        $configuredIssuer = $this->options['issuer'] ?? '';
         if (isset($this->options['discoveryUri'])) {
             $this->amendOptionsWithDiscovery($this->options['discoveryUri']);
+            if ($configuredIssuer !== '') {
+                if ($this->options['issuer'] !== $configuredIssuer) {
+                    $this->logger->warning(
+                        'OpenID Connect Client: Discovery for service "' . $this->serviceName
+                            . '" announced issuer "' . $this->options['issuer']
+                            . '", but "' . $configuredIssuer . '" is configured. Using the configured value.',
+                        LogEnvironment::fromMethodName(__METHOD__)
+                    );
+                }
+                $this->options['issuer'] = $configuredIssuer;
+            } else {
+                /** @see https://openid.net/specs/openid-connect-discovery-1_0.html#SelfIssuedDiscovery §4.3 */
+                $expectedDiscoveryUri = rtrim($this->options['issuer'], '/') . '/.well-known/openid-configuration';
+                if ($expectedDiscoveryUri !== $this->options['discoveryUri']) {
+                    throw new ConfigurationException(
+                        'OpenID Connect Client: The discovery document of service "' . $this->serviceName
+                            . '" announced the issuer "' . $this->options['issuer']
+                            . '", which does not match its discovery URI "' . $this->options['discoveryUri']
+                            . '". Configure the "issuer" option explicitly if this is intended.',
+                        1788189118
+                    );
+                }
+            }
+        }
+        if ($this->options['issuer'] === '') {
+            throw new ConfigurationException(sprintf('OpenID Connect Client: Option "issuer" has to be configured for service "%s" when no "discoveryUri" is given.', $this->serviceName), 1788189107);
         }
         if (empty($this->options['jwksUri'])) {
             throw new ConfigurationException(sprintf('OpenID Connect Client: Option "discoveryUri" or "jwksUri" has to be configured for service "%s".', $this->serviceName), 1554968498);
@@ -273,7 +306,7 @@ final class OpenIdConnectClient
      */
     public function getJwks(): array
     {
-        $cacheIdentifier = sha1($this->options['jwksUri']);
+        $cacheIdentifier = $this->getJwksCacheId();
         $jwks = $this->jwksCache->get($cacheIdentifier);
         if (empty($jwks)) {
             try {
@@ -294,6 +327,31 @@ final class OpenIdConnectClient
             $this->jwksCache->set($cacheIdentifier, $jwks);
         }
         return $jwks;
+    }
+
+    public function verifyToken(string $token): ?VerifiedJwt
+    {
+        $result = null;
+        $jwt = VerifiedJwt::tryFromJWTString($token, $this->getJwtVerification(), $this->logger, $result);
+        if ($result instanceof JwtMissesSignatureKey && $this->mayRefetchJwks()) {
+            $this->jwksCache->remove($this->getJwksCacheId());
+            $jwt = VerifiedJwt::tryFromJWTString($token, $this->getJwtVerification(), $this->logger, $result);
+            if ($result instanceof JwtMissesSignatureKey) {
+                $this->logger->error('JWT misses signature key even after refresh');
+            }
+        }
+
+        return $jwt;
+    }
+
+    public function getJwtVerification(): JwtVerification
+    {
+        return new JwtVerification(
+            jwkSet: JwkSet::fromArray($this->getJwks()),
+            expectedIssuer: $this->options['issuer'],
+            expectedAudience: $this->options['audience'] ?: $this->options['clientId'],
+            trustedAudiences: $this->options['trustedAudiences'],
+        );
     }
 
     /**
@@ -378,5 +436,20 @@ final class OpenIdConnectClient
             throw new ConnectionException(sprintf('OpenID Connect Client: Failed retrieving oAuth token %s: %s', $authorizationIdentifier, $exception->getMessage()), 1559202394);
         }
         return $authorization;
+    }
+
+    private function getJwksCacheId(): string
+    {
+        return sha1($this->options['jwksUri']);
+    }
+
+    private function mayRefetchJwks(): bool
+    {
+        $identifier = 'jwks-refetch-' . $this->getJwksCacheId();
+        if ($this->jwksCache->has($identifier)) {
+            return false;
+        }
+        $this->jwksCache->set($identifier, true, [], 300);
+        return true;
     }
 }

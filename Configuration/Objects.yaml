@@ -31,3 +31,16 @@ Flownative\OpenIdConnect\Client\Http\SetJwtCookieMiddleware:
       setting: 'Flownative.OpenIdConnect.Client.middleware'
     2:
       setting: 'Neos.Flow.security.authentication.providers'
+
+Flownative\OpenIdConnect\Client\BackChannelLogout\AuthenticationRevocationRegistry:
+  arguments:
+    1:
+      object:
+        factoryObjectName: Neos\Flow\Cache\CacheManager
+        factoryMethodName: getCache
+        arguments:
+          1:
+            value: Flownative_OpenIdConnect_Client_AuthenticationRevocations
+    2:
+      setting: Flownative.OpenIdConnect.Client.authenticationRevocation.lifetime
+
