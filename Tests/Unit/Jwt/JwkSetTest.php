@@ -77,17 +77,16 @@ class JwkSetTest extends TestCase
         ?Jwk $expectedKey,
         ?\Throwable $expectedException,
     ): void {
-        $actualException = null;
         try {
             $actualKey = $subject->requireSignatureVerificationKey(
                 $keyId,
                 $algorithm,
             );
-            Assert::assertSame($expectedKey, $actualKey);
-            Assert::assertNull($expectedException);
+            $actualException = null;
         } catch (\Throwable $actualException) {
-            Assert::assertNull($expectedKey);
+            $actualKey = null;
         }
+        Assert::assertSame($expectedKey, $actualKey);
         Assert::assertEquals($expectedException, $actualException);
     }
 
