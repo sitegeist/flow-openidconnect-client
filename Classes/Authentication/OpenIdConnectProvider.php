@@ -10,6 +10,7 @@ use Flownative\OpenIdConnect\Client\ConnectionException;
 use Flownative\OpenIdConnect\Client\IdentityToken;
 use Flownative\OpenIdConnect\Client\OpenIdConnectClient;
 use Flownative\OpenIdConnect\Client\ServiceException;
+use Flownative\OpenIdConnect\Client\TokenExchange\IdentityTokenRegistry;
 use Neos\Cache\Exception as CacheException;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Configuration\Exception\InvalidConfigurationTypeException;
@@ -67,6 +68,12 @@ final class OpenIdConnectProvider extends AbstractProvider
     protected $authenticationRevocationRegistry;
 
     /**
+     * @Flow\Inject
+     * @var IdentityTokenRegistry
+     */
+    protected $identityTokenRegistry;
+
+    /**
      * @return array
      */
     public function getTokenClassNames(): array
@@ -106,7 +113,7 @@ final class OpenIdConnectProvider extends AbstractProvider
         try {
             $client = new OpenIdConnectClient($this->getServiceName());
             $jwks = $client->getJwks();
-            $identityToken = $authenticationToken->extractIdentityTokenFromRequest($this->options['jwtCookieName']);
+            $identityToken = $authenticationToken->extractIdentityTokenFromRequest($this->options['jwtCookieName'], $this->identityTokenRegistry);
 
             try {
                 $hasValidSignature = $identityToken->hasValidSignature($jwks);

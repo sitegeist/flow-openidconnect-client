@@ -44,3 +44,15 @@ Flownative\OpenIdConnect\Client\BackChannelLogout\AuthenticationRevocationRegist
     2:
       setting: Flownative.OpenIdConnect.Client.authenticationRevocation.lifetime
 
+Flownative\OpenIdConnect\Client\TokenExchange\IdentityTokenRegistry:
+  arguments:
+    1:
+      object:
+        factoryObjectName: Neos\Flow\Cache\CacheManager
+        factoryMethodName: getCache
+        arguments:
+          1:
+            value: Flownative_OpenIdConnect_Client_IdentityTokens
+    2:
+      setting: Flownative.OpenIdConnect.Client.identityTokenRegistry.lifetime
+

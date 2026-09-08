@@ -13,6 +13,8 @@ Flownative:
 #            clientSecret: 'very-secret'
       authenticationRevocation:
         lifetime: 3600
+      identityTokenRegistry:
+        lifetime: 60
 #Neos:
 #  Flow:
 #    security:

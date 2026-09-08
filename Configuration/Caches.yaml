@@ -14,3 +14,8 @@ Flownative_OpenIdConnect_Client_AuthenticationRevocations:
   frontend: Neos\Cache\Frontend\VariableFrontend
   backend: Neos\Cache\Backend\FileBackend
   persistent: true
+
+Flownative_OpenIdConnect_Client_IdentityTokens:
+  frontend: Neos\Cache\Frontend\VariableFrontend
+  backend: Neos\Cache\Backend\FileBackend
+  persistent: true

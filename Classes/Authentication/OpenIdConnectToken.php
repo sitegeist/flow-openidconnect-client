@@ -7,6 +7,7 @@ use Flownative\OpenIdConnect\Client\IdentityToken;
 use Flownative\OpenIdConnect\Client\OAuthClient;
 use Flownative\OpenIdConnect\Client\OpenIdConnectClient;
 use Flownative\OpenIdConnect\Client\ServiceException;
+use Flownative\OpenIdConnect\Client\TokenExchange\IdentityTokenRegistry;
 use Neos\Flow\Mvc\ActionRequest;
 use Neos\Flow\Security\Authentication\Token\AbstractToken;
 use Neos\Flow\Security\Authentication\Token\SessionlessTokenInterface;
@@ -21,6 +22,11 @@ final class OpenIdConnectToken extends AbstractToken implements SessionlessToken
      * Name of the parameter used internally by this OpenID Connect client package in GET query parts
      */
     public const OIDC_PARAMETER_NAME = 'flownative_oidc';
+
+    /**
+     * Name of the parameter used for token exchange
+     */
+    public const OIDC_EXCHANGE_ID_PARAMETER_NAME = 'flownative_oidc_token_exchange_id';
 
     protected array $queryParameters = [];
 
@@ -56,7 +62,7 @@ final class OpenIdConnectToken extends AbstractToken implements SessionlessToken
      * @throws AuthenticationRequiredException
      * @throws InvalidAuthenticationStatusException
      */
-    public function extractIdentityTokenFromRequest(string $cookieName): IdentityToken
+    public function extractIdentityTokenFromRequest(string $cookieName, ?IdentityTokenRegistry $identityTokenRegistry = null): IdentityToken
     {
         if ($this->authorizationHeader !== '' && str_contains($this->authorizationHeader, 'Bearer ')) {
             $identityToken = $this->extractIdentityTokenFromAuthorizationHeader($this->authorizationHeader);
@@ -83,6 +89,9 @@ final class OpenIdConnectToken extends AbstractToken implements SessionlessToken
             } catch (ServiceException | ConnectionException $exception) {
                 throw new AccessDeniedException(sprintf('Could not extract identity token for authorization identifier "%s": %s', $authorizationIdentifier, $exception->getMessage()), 1560350413, $exception);
             }
+        } elseif ($identityTokenRegistry && ($entryId = $this->queryParameters[self::OIDC_EXCHANGE_ID_PARAMETER_NAME])) {
+            $identityToken = $identityTokenRegistry->claim($entryId)
+                ?? throw new AuthenticationRequiredException('Identity token exchange entry id is unknown or expired', 1788876232);
         } else {
             $identityToken = $this->extractIdentityTokenFromCookie($cookieName);
         }
