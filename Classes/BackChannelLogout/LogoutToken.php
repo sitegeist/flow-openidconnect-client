@@ -74,8 +74,8 @@ final class LogoutToken
         );
     }
 
-    public function isExpiredAt(\DateTimeImmutable $now): bool
+    public function isExpiredAt(\DateTimeImmutable $date): bool
     {
-        return $this->expires < $now->sub(new \DateInterval(self::CLOCK_SKEW_LEEWAY));
+        return $this->expires < $date->sub(new \DateInterval(self::CLOCK_SKEW_LEEWAY));
     }
 }

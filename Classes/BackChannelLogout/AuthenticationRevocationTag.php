@@ -7,10 +7,10 @@ namespace Flownative\OpenIdConnect\Client\BackChannelLogout;
 use Neos\Flow\Annotations as Flow;
 
 #[Flow\Proxy(false)]
-final readonly class AuthenticationRevocationTag
+final class AuthenticationRevocationTag
 {
     private function __construct(
-        public string $value,
+        public readonly string $value,
     ) {
     }
 
