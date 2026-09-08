@@ -15,13 +15,10 @@ use Flownative\OpenIdConnect\Client\Jwt\SupportedAlgorithm;
 use Flownative\OpenIdConnect\Client\Jwt\TokenIsAlreadyUsable;
 use Flownative\OpenIdConnect\Client\Jwt\VerifiedJwt;
 use Lcobucci\JWT\Encoding\JoseEncoder;
-use Lcobucci\JWT\Signer\Rsa\Sha512;
 use Lcobucci\JWT\Token\Builder;
 use Lcobucci\JWT\Validation\Constraint\IssuedBy;
 use Lcobucci\JWT\Validation\Constraint\PermittedFor;
-use Lcobucci\JWT\Validation\Constraint\SignedWith;
 use Lcobucci\JWT\Validation\ConstraintViolation;
-use Lcobucci\JWT\Validation\RequiredConstraintsViolated;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
 
@@ -32,7 +29,7 @@ class VerifiedJwtTest extends TestCase
     private static ?TestKeyPair $keyPair = null;
     private ?JwtVerification $policy;
 
-    public function setUp(): void
+    protected function setUp(): void
     {
         parent::setUp();
 
@@ -47,7 +44,7 @@ class VerifiedJwtTest extends TestCase
             jwkSet: JwkSet::create([$key]),
             expectedIssuer: 'me',
             expectedAudience: 'us',
-            trustedAudiences: ['us'],
+            trustedAudiences: ['partner'],
             date: new \DateTimeImmutable(self::NOW),
         );
     }
@@ -87,8 +84,27 @@ class VerifiedJwtTest extends TestCase
      */
     public static function jwtProvider(): iterable
     {
-        yield 'empty string' => [
+        yield 'invalid token structure' => [
             'jwt' => '',
+            'keyPair' => self::requireKeyPair(),
+            'tokenExpected' => false,
+            'expectedResult' => null,
+        ];
+
+        yield 'undecodable content' => [
+            'jwt' => '!.!.!',
+            'keyPair' => self::requireKeyPair(),
+            'tokenExpected' => false,
+            'expectedResult' => null,
+        ];
+
+        yield 'unsupported header' => [
+            'jwt' => static fn (Builder $builder): Builder => $builder
+                ->withHeader('kid', 'my-key')
+                ->withHeader('enc', 'A128CBC-HS256')
+                ->issuedBy('me')
+                ->permittedFor('us', 'partner')
+                ->issuedAt((new \DateTimeImmutable(self::NOW))->modify('-10 seconds')),
             'keyPair' => self::requireKeyPair(),
             'tokenExpected' => false,
             'expectedResult' => null,
@@ -108,8 +124,8 @@ class VerifiedJwtTest extends TestCase
             'jwt' => static fn (Builder $builder): Builder => $builder
                 ->withHeader('kid', 'my-key')
                 ->issuedBy('me')
-                ->permittedFor('us')
-                ->issuedAt((new \DateTimeImmutable(self::NOW))->modify('-10 seconds')),
+                ->permittedFor('us', 'partner')
+                ->issuedAt((new \DateTimeImmutable(self::NOW))->modify('+60 seconds')),
             'keyPair' => self::requireKeyPair(),
             'tokenExpected' => true,
             'expectedResult' => new JwtVerificationSucceeded(),
@@ -174,6 +190,22 @@ class VerifiedJwtTest extends TestCase
             ]),
         ];
 
+        yield 'partially wrong audience' => [
+            'jwt' => static fn (Builder $builder): Builder => $builder
+                ->withHeader('kid', 'my-key')
+                ->issuedBy('me')
+                ->permittedFor('us', 'someone-else')
+                ->issuedAt((new \DateTimeImmutable(self::NOW))->modify('-10 seconds')),
+            'keyPair' => self::requireKeyPair(),
+            'tokenExpected' => false,
+            'expectedResult' => new JwtViolatesConstraints([
+                ConstraintViolation::error(
+                    'The token claims audience(s) not trusted by this client: someone-else',
+                    new AudiencesAreTrusted('us', ['partner']),
+                )
+            ]),
+        ];
+
         yield 'wrong audience' => [
             'jwt' => static fn (Builder $builder): Builder => $builder
                 ->withHeader('kid', 'my-key')
@@ -199,7 +231,7 @@ class VerifiedJwtTest extends TestCase
                 ->withHeader('kid', 'my-key')
                 ->issuedBy('me')
                 ->permittedFor('us')
-                ->canOnlyBeUsedAfter((new \DateTimeImmutable(self::NOW))->modify('+120 seconds'))
+                ->canOnlyBeUsedAfter((new \DateTimeImmutable(self::NOW))->modify('+61 seconds'))
                 ->issuedAt((new \DateTimeImmutable(self::NOW))->modify('-10 seconds')),
             'keyPair' => self::requireKeyPair(),
             'tokenExpected' => false,

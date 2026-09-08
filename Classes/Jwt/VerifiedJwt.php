@@ -54,6 +54,7 @@ final class VerifiedJwt
                 return null;
             })(),
             JwtMissesSignatureKey::class => (function () use ($result, $logger) {
+                $logger?->error('Signature key for JWT is missing');
                 return null;
             })(),
             JwtVerificationSucceeded::class => new self($token),
