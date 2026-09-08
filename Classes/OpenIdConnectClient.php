@@ -20,6 +20,7 @@ use Neos\Cache\Exception as CacheException;
 use Neos\Cache\Frontend\VariableFrontend;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Log\Utility\LogEnvironment;
+use Neos\Flow\ObjectManagement\DependencyInjection\DependencyProxy;
 use Neos\Utility\Arrays;
 use Psr\Http\Message\UriInterface;
 use Psr\Log\LoggerInterface;
@@ -332,6 +333,9 @@ final class OpenIdConnectClient
     public function verifyToken(string $token): ?VerifiedJwt
     {
         $result = null;
+        if ($this->logger instanceof DependencyProxy) {
+            $this->logger->_activateDependency();
+        }
         $jwt = VerifiedJwt::tryFromJWTString($token, $this->getJwtVerification(), $this->logger, $result);
         if ($result instanceof JwtMissesSignatureKey && $this->mayRefetchJwks()) {
             $this->jwksCache->remove($this->getJwksCacheId());

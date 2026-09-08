@@ -9,10 +9,12 @@ use Lcobucci\JWT\Validation\Constraint\IssuedBy;
 use Lcobucci\JWT\Validation\Constraint\PermittedFor;
 use Lcobucci\JWT\Validation\RequiredConstraintsViolated;
 use Lcobucci\JWT\Validation\Validator;
+use Neos\Flow\Annotations as Flow;
 
 /**
  * The policy for JWT verification
  */
+#[Flow\Proxy(false)]
 final class JwtVerification
 {
     /**

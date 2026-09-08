@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Flownative\OpenIdConnect\Client\BackChannelLogout;
 
 use Flownative\OpenIdConnect\Client\Jwt\VerifiedJwt;
+use Neos\Flow\Annotations as Flow;
 
 /**
  * @see https://openid.net/specs/openid-connect-backchannel-1_0.html#LogoutToken
  */
+#[Flow\Proxy(false)]
 final class LogoutToken
 {
     public const EVENT = 'http://schemas.openid.net/event/backchannel-logout';
