@@ -18,4 +18,5 @@ Flownative_OpenIdConnect_Client_AuthenticationRevocations:
 Flownative_OpenIdConnect_Client_IdentityTokens:
   frontend: Neos\Cache\Frontend\VariableFrontend
   backend: Neos\Cache\Backend\FileBackend
-  persistent: true
+  backendOptions:
+    defaultLifetime: 60

@@ -14,7 +14,6 @@ class IdentityTokenRegistry
 {
     public function __construct(
         private readonly VariableFrontend $cache,
-        private readonly int $lifetime,
     ) {
     }
 
@@ -24,16 +23,20 @@ class IdentityTokenRegistry
     public function add(IdentityToken $token): string
     {
         $entryId = Algorithms::generateRandomToken(32);
-        $this->cache->set($entryId, $token->asJwt(), lifetime: $this->lifetime);
+        $this->cache->set($entryId, $token->asJwt());
 
         return $entryId;
     }
 
     public function claim(string $entryId): ?IdentityToken
     {
-        $jwt = $this->cache->get($entryId);
-        $this->cache->remove($entryId);
+        try {
+            $jwt = $this->cache->get($entryId);
+            $this->cache->remove($entryId);
 
-        return is_string($jwt) && $jwt !== '' ? IdentityToken::fromJwt($jwt) : null;
+            return is_string($jwt) && $jwt !== '' ? IdentityToken::fromJwt($jwt) : null;
+        } catch (\InvalidArgumentException) {
+            return null;
+        }
     }
 }

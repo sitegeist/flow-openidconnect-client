@@ -66,6 +66,9 @@ final class OpenIdConnectToken extends AbstractToken implements SessionlessToken
     {
         if ($this->authorizationHeader !== '' && str_contains($this->authorizationHeader, 'Bearer ')) {
             $identityToken = $this->extractIdentityTokenFromAuthorizationHeader($this->authorizationHeader);
+        } elseif ($identityTokenRegistry && is_string($entryId = $this->queryParameters[self::OIDC_EXCHANGE_ID_PARAMETER_NAME] ?? null)) {
+            $identityToken = $identityTokenRegistry->claim($entryId)
+                ?? throw new AuthenticationRequiredException('Identity token exchange entry id is unknown or expired', 1788876232);
         } elseif (isset($this->queryParameters[self::OIDC_PARAMETER_NAME])) {
             $authorizationIdQueryParameterName = OAuthClient::generateAuthorizationIdQueryParameterName(OAuthClient::SERVICE_TYPE);
             if (!isset($this->queryParameters[$authorizationIdQueryParameterName])) {
@@ -89,9 +92,6 @@ final class OpenIdConnectToken extends AbstractToken implements SessionlessToken
             } catch (ServiceException | ConnectionException $exception) {
                 throw new AccessDeniedException(sprintf('Could not extract identity token for authorization identifier "%s": %s', $authorizationIdentifier, $exception->getMessage()), 1560350413, $exception);
             }
-        } elseif ($identityTokenRegistry && ($entryId = $this->queryParameters[self::OIDC_EXCHANGE_ID_PARAMETER_NAME])) {
-            $identityToken = $identityTokenRegistry->claim($entryId)
-                ?? throw new AuthenticationRequiredException('Identity token exchange entry id is unknown or expired', 1788876232);
         } else {
             $identityToken = $this->extractIdentityTokenFromCookie($cookieName);
         }

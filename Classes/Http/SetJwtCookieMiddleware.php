@@ -157,11 +157,20 @@ final class SetJwtCookieMiddleware implements MiddlewareInterface
     {
         $queryParameters = Query::parse($request->getUri()->getQuery());
         $authorizationIdQueryParameterName = OAuthClient::generateAuthorizationIdQueryParameterName(OAuthClient::SERVICE_TYPE);
-        if (!isset($queryParameters[OpenIdConnectToken::OIDC_PARAMETER_NAME]) && !isset($queryParameters[$authorizationIdQueryParameterName])) {
+        if (
+            !isset($queryParameters[OpenIdConnectToken::OIDC_PARAMETER_NAME])
+            && !isset($queryParameters[$authorizationIdQueryParameterName])
+            && !isset($queryParameters[OpenIdConnectToken::OIDC_EXCHANGE_ID_PARAMETER_NAME])
+        ) {
             return $response;
         }
 
-        unset($queryParameters[OpenIdConnectToken::OIDC_PARAMETER_NAME], $queryParameters[$authorizationIdQueryParameterName]);
+        unset(
+            $queryParameters[OpenIdConnectToken::OIDC_PARAMETER_NAME],
+            $queryParameters[$authorizationIdQueryParameterName],
+            $queryParameters[OpenIdConnectToken::OIDC_EXCHANGE_ID_PARAMETER_NAME],
+        );
+
         $uri = $request->getUri()->withQuery(Query::build($queryParameters));
 
         return $response
