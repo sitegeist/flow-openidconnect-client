@@ -68,7 +68,7 @@ final class LogoutToken
             issuer: $issuer,
             revocationTag: $sessionId
                 ? AuthenticationRevocationTag::forSessionId($issuer, $sessionId)
-                : AuthenticationRevocationTag::forSubject($issuer, $sessionId)
+                : AuthenticationRevocationTag::forSubject($issuer, $subject)
         );
     }
 

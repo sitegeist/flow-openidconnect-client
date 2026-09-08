@@ -21,8 +21,12 @@ final class VerifiedJwt
     ) {
     }
 
-    public static function tryFromJWTString(string $jwt, JwtVerification $policy, ?LoggerInterface $logger = null, &$result = null): ?self
-    {
+    public static function tryFromJWTString(
+        string $jwt,
+        JwtVerification $policy,
+        ?LoggerInterface $logger = null,
+        &$result = null,
+    ): ?self {
         $parser = new Parser(new JoseEncoder());
         try {
             $token = $parser->parse($jwt);

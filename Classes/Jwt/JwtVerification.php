@@ -23,6 +23,7 @@ final class JwtVerification
         private readonly string $expectedIssuer,
         private readonly string $expectedAudience,
         private readonly array $trustedAudiences,
+        private readonly \DateTimeImmutable $date,
     ) {
     }
 
@@ -39,7 +40,9 @@ final class JwtVerification
                 new IssuedBy($this->expectedIssuer),
                 new PermittedFor($this->expectedAudience),
                 new AudiencesAreTrusted($this->expectedAudience, $this->trustedAudiences),
+                new TokenIsAlreadyUsable($this->date),
             );
+
             return new JwtVerificationSucceeded();
         } catch (RequiredConstraintsViolated $exception) {
             return new JwtViolatesConstraints($exception->violations());
@@ -48,20 +51,5 @@ final class JwtVerification
         } catch (SignatureVerificationKeyIsAmbiguous $exception) {
             return new JwtHasAmbiguousSignatureKey();
         }
-
-        /**
-         * Restliche Constraints
-         * ┌──────────────────────────────────┬────────────────────┬───────────────────────────────────────────────────────────────────────────┐
-         * │             Prüfung              │       Träger       │                                 Anmerkung                                 │
-         * ├──────────────────────────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────────┤
-         * │ azp, falls vorhanden             │ eigener Constraint │ SHOULD                                                                    │
-         * ├──────────────────────────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────────┤
-         * │ iat mit Leeway                   │ eigener Constraint │ fehlt noch in deiner Todo-Liste — Plan §3.8, plus optionales Maximalalter │
-         * ├──────────────────────────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────────┤
-         * │ nbf, falls vorhanden             │ eigener Constraint │                                                                           │
-         * └──────────────────────────────────┴────────────────────┴───────────────────────────────────────────────────────────────────────────┘
-         */
-
     }
-
 }

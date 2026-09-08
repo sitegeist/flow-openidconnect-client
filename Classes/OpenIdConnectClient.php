@@ -351,6 +351,7 @@ final class OpenIdConnectClient
             expectedIssuer: $this->options['issuer'],
             expectedAudience: $this->options['audience'] ?: $this->options['clientId'],
             trustedAudiences: $this->options['trustedAudiences'],
+            date: new \DateTimeImmutable(),
         );
     }
 
