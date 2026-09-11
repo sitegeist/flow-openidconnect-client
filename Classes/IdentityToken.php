@@ -132,6 +132,14 @@ class IdentityToken
     }
 
     /**
+     * @see https://www.rfc-editor.org/info/rfc8693/#section-4.1
+     */
+    public function getActor(): ?string
+    {
+        return $this->values['act']['sub'] ?? null;
+    }
+
+    /**
      * Checks if the identity token's "scope" value contains the given identifier
      */
     public function scopeContains(string $scopeIdentifier): bool
