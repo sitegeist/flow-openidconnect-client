@@ -4,6 +4,7 @@ namespace Flownative\OpenIdConnect\Client;
 use JsonException;
 use Lcobucci\JWT\Encoding\JoseEncoder;
 use Lcobucci\JWT\Token;
+use Lcobucci\JWT\Token\RegisteredClaims;
 use Neos\Utility\Arrays;
 use phpseclib3\Crypt\PublicKeyLoader;
 use phpseclib3\Crypt\RSA;
@@ -114,6 +115,20 @@ class IdentityToken
     public function isExpiredAt(\DateTimeInterface $now): bool
     {
         return $this->parsedJwt->isExpired($now);
+    }
+
+    public function getIssuedAt(): ?\DateTimeImmutable
+    {
+        $issuedAt = $this->parsedJwt->claims()->get(RegisteredClaims::ISSUED_AT);
+
+        return $issuedAt instanceof \DateTimeImmutable ? $issuedAt : null;
+    }
+
+    public function getAuthTime(): ?\DateTimeImmutable
+    {
+        $authTime = ($this->values['auth_time'] ?? null);
+
+        return is_numeric($authTime) ? new \DateTimeImmutable('@' . (int)$authTime) : null;
     }
 
     /**

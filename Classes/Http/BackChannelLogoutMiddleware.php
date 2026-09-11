@@ -111,7 +111,7 @@ final class BackChannelLogoutMiddleware implements MiddlewareInterface
         /**
          * register tag for revocation in @see OpenIdConnectProvider::authenticate()
          */
-        $this->authenticationRevocationRegistry->add($logoutToken->revocationTag);
+        $this->authenticationRevocationRegistry->add($logoutToken->revocationTag, $logoutToken->issuedAt);
         /**
          * clear refresh token sessions, @see OpenIdConnectProvider::authenticate()
          */

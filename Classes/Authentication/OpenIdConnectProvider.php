@@ -120,7 +120,12 @@ final class OpenIdConnectProvider extends AbstractProvider
             $issuer = $client->getOptions()['issuer'] ?? throw new \RuntimeException('Issuer undefined for service ' . $this->getServiceName());
             $sessionId = $identityToken->values['sid'] ?? null;
             $sessionRevocationTag = is_string($sessionId) ? AuthenticationRevocationTag::forSessionId($issuer, $sessionId) : null;
-            if ($sessionRevocationTag && $this->authenticationRevocationRegistry->has($sessionRevocationTag)) {
+            // Let freshly issued identity tokens pass even if they only contain sub and an earlier token for that sub has been revoked
+            $referenceTime = $identityToken->getAuthTime() ?: $identityToken->getIssuedAt();
+            if (
+                $sessionRevocationTag
+                && $this->authenticationRevocationRegistry->isRevokedAt($sessionRevocationTag, $referenceTime)
+            ) {
                 $this->logger->notice('Authentication was revoked by session', LogEnvironment::fromMethodName(__METHOD__));
                 $authenticationToken->setAuthenticationStatus(TokenInterface::AUTHENTICATION_NEEDED);
                 return;
@@ -128,7 +133,7 @@ final class OpenIdConnectProvider extends AbstractProvider
 
             $subject = $identityToken->values['sub'] ?? null;
             $subjectRevocationTag = is_string($subject) ? AuthenticationRevocationTag::forSubject($issuer, $subject) : null;
-            if ($subjectRevocationTag && $this->authenticationRevocationRegistry->has($subjectRevocationTag)) {
+            if ($subjectRevocationTag && $this->authenticationRevocationRegistry->isRevokedAt($subjectRevocationTag, $referenceTime)) {
                 $this->logger->notice('Authentication was revoked by subject', LogEnvironment::fromMethodName(__METHOD__));
                 $authenticationToken->setAuthenticationStatus(TokenInterface::AUTHENTICATION_NEEDED);
                 return;
