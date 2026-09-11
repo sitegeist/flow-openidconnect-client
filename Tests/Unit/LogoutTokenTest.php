@@ -20,6 +20,7 @@ use PHPUnit\Framework\TestCase;
 
 class LogoutTokenTest extends TestCase
 {
+    private const NOW = '2026-09-08 10:08:25';
     private const THEN = '2026-09-09 11:09:26';
 
     private static ?TestKeyPair $keyPair = null;
@@ -38,7 +39,7 @@ class LogoutTokenTest extends TestCase
         ?\Throwable $expectedException,
     ): void {
         try {
-            $actualToken = LogoutToken::create($token);
+            $actualToken = LogoutToken::create($token, new \DateTimeImmutable(self::NOW));
             $actualException = null;
         } catch (\Throwable $actualException) {
             $actualToken = null;
@@ -48,7 +49,7 @@ class LogoutTokenTest extends TestCase
             Assert::assertInstanceOf(LogoutToken::class, $actualToken);
             Assert::assertSame($expectedTokenProperties->subject, $actualToken->subject);
             Assert::assertSame($expectedTokenProperties->sessionId, $actualToken->sessionId);
-            Assert::assertEquals($expectedTokenProperties->expires, $actualToken->expires);
+            Assert::assertEquals($expectedTokenProperties->expires, $actualToken->expiration);
             Assert::assertSame($expectedTokenProperties->identifier, $actualToken->identifier);
             Assert::assertSame($expectedTokenProperties->issuer, $actualToken->issuer);
             Assert::assertSame($expectedTokenProperties->revocationTag->value, $actualToken->revocationTag->value);
@@ -77,19 +78,20 @@ class LogoutTokenTest extends TestCase
                         ->withHeader('kid', 'my-key')
                         ->issuedBy('me')
                         ->permittedFor('us', 'partner')
-                        ->issuedAt((new \DateTimeImmutable(self::THEN))->modify('-10 seconds'))
+                        ->issuedAt((new \DateTimeImmutable(self::NOW))->add(new \DateInterval('PT60S')))
                         ->withClaim('events', [LogoutToken::EVENT => new \stdClass()])
                         ->identifiedBy('my-id')
                         ->withClaim('sid', $sessionId)
                         ->relatedTo($subject)
-                        ->expiresAt(new \DateTimeImmutable(self::THEN))
+                        ->expiresAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT59S')))
+                        ->canOnlyBeUsedAfter((new \DateTimeImmutable(self::NOW))->add(new \DateInterval('PT60S')))
                 ),
                 self::requirePolicy(),
             ),
             'expectedTokenProperties' => new LogoutTokenProperties(
                 subject: $subject,
                 sessionId: $sessionId,
-                expires: new \DateTimeImmutable(self::THEN),
+                expires: (new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT59S')),
                 identifier: 'my-id',
                 issuer: 'me',
                 revocationTag: AuthenticationRevocationTag::forSessionId('me', $sessionId),
@@ -104,7 +106,7 @@ class LogoutTokenTest extends TestCase
                         ->withHeader('kid', 'my-key')
                         ->issuedBy('me')
                         ->permittedFor('us', 'partner')
-                        ->issuedAt((new \DateTimeImmutable(self::THEN))->modify('-10 seconds'))
+                        ->issuedAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT10S')))
                         ->withClaim('events', [LogoutToken::EVENT => new \stdClass()])
                         ->identifiedBy('my-id')
                         ->relatedTo($subject)
@@ -130,7 +132,7 @@ class LogoutTokenTest extends TestCase
                         ->withHeader('kid', 'my-key')
                         ->issuedBy('me')
                         ->permittedFor('us', 'partner')
-                        ->issuedAt((new \DateTimeImmutable(self::THEN))->modify('-10 seconds'))
+                        ->issuedAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT10S')))
                         ->withClaim('events', ['wat' => new \stdClass()])
                         ->identifiedBy('my-id')
                         ->withClaim('sid', $sessionId)
@@ -150,7 +152,7 @@ class LogoutTokenTest extends TestCase
                         ->withHeader('kid', 'my-key')
                         ->issuedBy('me')
                         ->permittedFor('us', 'partner')
-                        ->issuedAt((new \DateTimeImmutable(self::THEN))->modify('-10 seconds'))
+                        ->issuedAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT10S')))
                         ->withClaim('events', [LogoutToken::EVENT => new \stdClass()])
                         ->identifiedBy('my-id')
                         ->withClaim('sid', $sessionId)
@@ -171,7 +173,7 @@ class LogoutTokenTest extends TestCase
                         ->withHeader('kid', 'my-key')
                         ->issuedBy('')
                         ->permittedFor('us', 'partner')
-                        ->issuedAt((new \DateTimeImmutable(self::THEN))->modify('-10 seconds'))
+                        ->issuedAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT10S')))
                         ->withClaim('events', [LogoutToken::EVENT => new \stdClass()])
                         ->identifiedBy('my-id')
                         ->withClaim('sid', $sessionId)
@@ -191,7 +193,7 @@ class LogoutTokenTest extends TestCase
                         ->withHeader('kid', 'my-key')
                         ->issuedBy('me')
                         ->permittedFor('us', 'partner')
-                        ->issuedAt((new \DateTimeImmutable(self::THEN))->modify('-10 seconds'))
+                        ->issuedAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT10S')))
                         ->withClaim('events', [LogoutToken::EVENT => new \stdClass()])
                         ->withClaim('sid', $sessionId)
                         ->relatedTo($subject)
@@ -210,7 +212,7 @@ class LogoutTokenTest extends TestCase
                         ->withHeader('kid', 'my-key')
                         ->issuedBy('me')
                         ->permittedFor('us', 'partner')
-                        ->issuedAt((new \DateTimeImmutable(self::THEN))->modify('-10 seconds'))
+                        ->issuedAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT10S')))
                         ->withClaim('events', [LogoutToken::EVENT => new \stdClass()])
                         ->identifiedBy('my-id')
                         ->expiresAt(new \DateTimeImmutable(self::THEN))
@@ -228,7 +230,7 @@ class LogoutTokenTest extends TestCase
                         ->withHeader('kid', 'my-key')
                         ->issuedBy('me')
                         ->permittedFor('us', 'partner')
-                        ->issuedAt((new \DateTimeImmutable(self::THEN))->modify('-10 seconds'))
+                        ->issuedAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT10S')))
                         ->withClaim('events', [LogoutToken::EVENT => new \stdClass()])
                         ->identifiedBy('my-id')
                         ->withClaim('sid', $sessionId)
@@ -239,42 +241,66 @@ class LogoutTokenTest extends TestCase
             'expectedTokenProperties' => null,
             'expectedException' => LogoutTokenIsInvalid::becauseItClaimsNoExpirationDate(),
         ];
-    }
 
-    /**
-     * @dataProvider expirationDateProvider
-     */
-    public function testIsExpiredAt(\DateTimeImmutable $date, bool $expectedResult): void
-    {
-        $token = LogoutToken::create(VerifiedJwt::tryFromJWTString(
-            self::requireKeyPair()->sign(
-                static fn (Builder $builder): Builder => $builder
-                    ->withHeader('kid', 'my-key')
-                    ->issuedBy('me')
-                    ->permittedFor('us', 'partner')
-                    ->issuedAt((new \DateTimeImmutable(self::THEN))->modify('-10 seconds'))
-                    ->withClaim('events', [LogoutToken::EVENT => new \stdClass()])
-                    ->identifiedBy('my-id')
-                    ->withClaim('sid', Algorithms::generateUUID())
-                    ->relatedTo(Algorithms::generateRandomString(16))
-                    ->expiresAt(new \DateTimeImmutable(self::THEN))
+        yield '(only just) expired logout token' => [
+            'token' => VerifiedJwt::tryFromJWTString(
+                self::requireKeyPair()->sign(
+                    static fn (Builder $builder): Builder => $builder
+                        ->withHeader('kid', 'my-key')
+                        ->issuedBy('me')
+                        ->permittedFor('us', 'partner')
+                        ->issuedAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT1H')))
+                        ->withClaim('events', [LogoutToken::EVENT => new \stdClass()])
+                        ->identifiedBy('my-id')
+                        ->withClaim('sid', $sessionId)
+                        ->relatedTo($subject)
+                        ->expiresAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT60S')))
+                ),
+                self::requirePolicy(),
             ),
-            self::requirePolicy(),
-        ));
-
-        Assert::assertSame($expectedResult, $token->isExpiredAt($date));
-    }
-
-    public static function expirationDateProvider(): iterable
-    {
-        yield 'only just not expired' => [
-            'date' => (new \DateTimeImmutable(self::THEN))->add(new \DateInterval('PT60S')),
-            'expectedResult' => false,
+            'expectedTokenProperties' => null,
+            'expectedException' => LogoutTokenIsInvalid::becauseItIsExpired(),
         ];
 
-        yield 'only just expired' => [
-            'date' => (new \DateTimeImmutable(self::THEN))->add(new \DateInterval('PT61S')),
-            'expectedResult' => true,
+        yield 'logout token not yet to be used' => [
+            'token' => VerifiedJwt::tryFromJWTString(
+                self::requireKeyPair()->sign(
+                    static fn (Builder $builder): Builder => $builder
+                        ->withHeader('kid', 'my-key')
+                        ->issuedBy('me')
+                        ->permittedFor('us', 'partner')
+                        ->issuedAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT10S')))
+                        ->withClaim('events', [LogoutToken::EVENT => new \stdClass()])
+                        ->identifiedBy('my-id')
+                        ->withClaim('sid', $sessionId)
+                        ->relatedTo($subject)
+                        ->expiresAt(new \DateTimeImmutable(self::THEN))
+                        ->canOnlyBeUsedAfter((new \DateTimeImmutable(self::NOW))->add(new \DateInterval('PT61S')))
+                ),
+                self::requirePolicy(),
+            ),
+            'expectedTokenProperties' => null,
+            'expectedException' => LogoutTokenIsInvalid::becauseItIsNotYetToBeUsed(),
+        ];
+
+        yield 'logout token violating the Temporal Prime Directive' => [
+            'token' => VerifiedJwt::tryFromJWTString(
+                self::requireKeyPair()->sign(
+                    static fn (Builder $builder): Builder => $builder
+                        ->withHeader('kid', 'my-key')
+                        ->issuedBy('me')
+                        ->permittedFor('us', 'partner')
+                        ->issuedAt((new \DateTimeImmutable(self::NOW))->add(new \DateInterval('PT61S')))
+                        ->withClaim('events', [LogoutToken::EVENT => new \stdClass()])
+                        ->identifiedBy('my-id')
+                        ->withClaim('sid', $sessionId)
+                        ->relatedTo($subject)
+                        ->expiresAt(new \DateTimeImmutable(self::THEN))
+                ),
+                self::requirePolicy(),
+            ),
+            'expectedTokenProperties' => null,
+            'expectedException' => LogoutTokenIsInvalid::becauseItIsIssuedInTheFuture(),
         ];
     }
 
@@ -298,7 +324,6 @@ class LogoutTokenTest extends TestCase
                 expectedIssuer: $issuer,
                 expectedAudience: 'us',
                 trustedAudiences: ['partner'],
-                date: new \DateTimeImmutable(self::THEN),
             );
         }
 

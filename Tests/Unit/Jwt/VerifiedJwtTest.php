@@ -12,7 +12,6 @@ use Flownative\OpenIdConnect\Client\Jwt\JwtVerification;
 use Flownative\OpenIdConnect\Client\Jwt\JwtVerificationSucceeded;
 use Flownative\OpenIdConnect\Client\Jwt\JwtViolatesConstraints;
 use Flownative\OpenIdConnect\Client\Jwt\SupportedAlgorithm;
-use Flownative\OpenIdConnect\Client\Jwt\TokenIsAlreadyUsable;
 use Flownative\OpenIdConnect\Client\Jwt\VerifiedJwt;
 use Lcobucci\JWT\Encoding\JoseEncoder;
 use Lcobucci\JWT\Token\Builder;
@@ -45,7 +44,6 @@ class VerifiedJwtTest extends TestCase
             expectedIssuer: 'me',
             expectedAudience: 'us',
             trustedAudiences: ['partner'],
-            date: new \DateTimeImmutable(self::NOW),
         );
     }
 
@@ -226,7 +224,19 @@ class VerifiedJwtTest extends TestCase
             ]),
         ];
 
-        yield 'not to be used before a future date' => [
+        yield 'valid, expired token' => [
+            'jwt' => static fn (Builder $builder): Builder => $builder
+                ->withHeader('kid', 'my-key')
+                ->issuedBy('me')
+                ->permittedFor('us')
+                ->issuedAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT1H')))
+                ->expiresAt((new \DateTimeImmutable(self::NOW))->sub(new \DateInterval('PT61S'))),
+            'keyPair' => self::requireKeyPair(),
+            'tokenExpected' => true,
+            'expectedResult' => new JwtVerificationSucceeded(),
+        ];
+
+        yield 'valid token, but not to be used before a future date' => [
             'jwt' => static fn (Builder $builder): Builder => $builder
                 ->withHeader('kid', 'my-key')
                 ->issuedBy('me')
@@ -234,29 +244,19 @@ class VerifiedJwtTest extends TestCase
                 ->canOnlyBeUsedAfter((new \DateTimeImmutable(self::NOW))->modify('+61 seconds'))
                 ->issuedAt((new \DateTimeImmutable(self::NOW))->modify('-10 seconds')),
             'keyPair' => self::requireKeyPair(),
-            'tokenExpected' => false,
-            'expectedResult' => new JwtViolatesConstraints([
-                ConstraintViolation::error(
-                    'The token cannot be used yet',
-                    new TokenIsAlreadyUsable(new \DateTimeImmutable(self::NOW)),
-                ),
-            ]),
+            'tokenExpected' => true,
+            'expectedResult' => new JwtVerificationSucceeded(),
         ];
 
-        yield 'violation of the Temporal Prime Directive' => [
+        yield 'valid token violating the Temporal Prime Directive' => [
             'jwt' => static fn (Builder $builder): Builder => $builder
                 ->withHeader('kid', 'my-key')
                 ->issuedBy('me')
                 ->permittedFor('us')
                 ->issuedAt((new \DateTimeImmutable(self::NOW))->modify('+120 seconds')),
             'keyPair' => self::requireKeyPair(),
-            'tokenExpected' => false,
-            'expectedResult' => new JwtViolatesConstraints([
-                ConstraintViolation::error(
-                    'The token was issued in the future',
-                    new TokenIsAlreadyUsable(new \DateTimeImmutable(self::NOW)),
-                ),
-            ]),
+            'tokenExpected' => true,
+            'expectedResult' => new JwtVerificationSucceeded(),
         ];
     }
 

@@ -13,6 +13,16 @@ use Lcobucci\JWT\Encoding\JoseEncoder;
 use Lcobucci\JWT\Token\Parser;
 use Psr\Log\LoggerInterface;
 
+/**
+ * A JWT, verified in that the token
+ * * can be unserialized and is structurally plausible
+ * * can be read, i.e. is unencrypted
+ * * is properly signed using one of the supported algorithms ({@see SupportedAlgorithm})
+ * * is issued by the expected authority
+ * * is permitted for us and we trust the audiences
+ *
+ * It does not state anything about temporal constraints like expiration or use in the future
+ */
 #[Flow\Proxy(false)]
 final class VerifiedJwt
 {

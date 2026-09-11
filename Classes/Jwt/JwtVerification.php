@@ -25,7 +25,6 @@ final class JwtVerification
         private readonly string $expectedIssuer,
         private readonly string $expectedAudience,
         private readonly array $trustedAudiences,
-        private readonly \DateTimeImmutable $date,
     ) {
     }
 
@@ -42,7 +41,6 @@ final class JwtVerification
                 new IssuedBy($this->expectedIssuer),
                 new PermittedFor($this->expectedAudience),
                 new AudiencesAreTrusted($this->expectedAudience, $this->trustedAudiences),
-                new TokenIsAlreadyUsable($this->date),
             );
 
             return new JwtVerificationSucceeded();

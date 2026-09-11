@@ -7,7 +7,6 @@ namespace Flownative\OpenIdConnect\Client\Http;
 use Flownative\OpenIdConnect\Client\Authentication\OpenIdConnectProvider;
 use Flownative\OpenIdConnect\Client\BackChannelLogout\AuthenticationRevocationRegistry;
 use Flownative\OpenIdConnect\Client\BackChannelLogout\LogoutTokenIsInvalid;
-use Flownative\OpenIdConnect\Client\BackChannelLogout\LogoutToken;
 use Flownative\OpenIdConnect\Client\ConfigurationException;
 use Flownative\OpenIdConnect\Client\ConnectionException;
 use Flownative\OpenIdConnect\Client\ServiceName;
@@ -79,8 +78,8 @@ final class BackChannelLogoutMiddleware implements MiddlewareInterface
 
         try {
             $oidcClient = new OpenIdConnectClient($serviceName->value);
-            $verifiedToken = $oidcClient->verifyToken($logoutTokenValue);
-            if (!$verifiedToken) {
+            $logoutToken = $oidcClient->getLogoutToken($logoutTokenValue);
+            if (!$logoutToken) {
                 return $this->createErrorResponse(
                     ErrorResponseBody::create(
                         ErrorCode::INVALID_REQUEST,
@@ -88,6 +87,13 @@ final class BackChannelLogoutMiddleware implements MiddlewareInterface
                     )
                 );
             }
+        } catch (LogoutTokenIsInvalid $exception) {
+            return $this->createErrorResponse(
+                ErrorResponseBody::create(
+                    ErrorCode::INVALID_REQUEST,
+                    $exception->getMessage(),
+                )
+            );
         } catch (ConfigurationException) {
             return $this->createErrorResponse(
                 ErrorResponseBody::create(
@@ -100,25 +106,6 @@ final class BackChannelLogoutMiddleware implements MiddlewareInterface
                 ->withStatus(503)
                 ->withHeader('Cache-Control', 'no-store')
                 ->withHeader('Retry-After', '60');
-        }
-
-        try {
-            $logoutToken = LogoutToken::create($verifiedToken);
-            if ($logoutToken->isExpiredAt(new \DateTimeImmutable())) {
-                return $this->createErrorResponse(
-                    ErrorResponseBody::create(
-                        ErrorCode::INVALID_REQUEST,
-                        'Logout token is expired',
-                    )
-                );
-            }
-        } catch (LogoutTokenIsInvalid $exception) {
-            return $this->createErrorResponse(
-                ErrorResponseBody::create(
-                    ErrorCode::INVALID_REQUEST,
-                    $exception->getMessage(),
-                )
-            );
         }
 
         /**

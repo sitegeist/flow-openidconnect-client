@@ -52,4 +52,36 @@ final class LogoutTokenIsInvalid extends \Exception
             code: 1788182557,
         );
     }
+
+    public static function becauseItClaimsNoIssuingDate(): self
+    {
+        return new self(
+            message: 'The token claims no issuing date',
+            code: 1789063325,
+        );
+    }
+
+    public static function becauseItIsExpired(): self
+    {
+        return new self(
+            message: 'The logout token is expired',
+            code: 1789115546,
+        );
+    }
+
+    public static function becauseItIsIssuedInTheFuture(): self
+    {
+        return new self(
+            message: 'The logout token was issued in the future',
+            code: 1789115846,
+        );
+    }
+
+    public static function becauseItIsNotYetToBeUsed(): self
+    {
+        return new self(
+            message: 'The logout token is not yet to be used',
+            code: 1789115956,
+        );
+    }
 }

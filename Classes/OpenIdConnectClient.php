@@ -8,6 +8,8 @@ use Flownative\OAuth2\Client\Authorization;
 use Flownative\OAuth2\Client\OAuthClientException;
 use Flownative\OpenIdConnect\Client\Authentication\OpenIdConnectToken;
 use Flownative\OpenIdConnect\Client\Authentication\TokenArguments;
+use Flownative\OpenIdConnect\Client\BackChannelLogout\LogoutToken;
+use Flownative\OpenIdConnect\Client\BackChannelLogout\LogoutTokenIsInvalid;
 use Flownative\OpenIdConnect\Client\Jwt\JwkSet;
 use Flownative\OpenIdConnect\Client\Jwt\JwtMissesSignatureKey;
 use Flownative\OpenIdConnect\Client\Jwt\JwtVerification;
@@ -330,6 +332,10 @@ final class OpenIdConnectClient
         return $jwks;
     }
 
+    /**
+     * Verifies a given serialized JWT if possible.
+     * For what that entails {@see VerifiedJwt}
+     */
     public function verifyToken(string $token): ?VerifiedJwt
     {
         $result = null;
@@ -348,6 +354,21 @@ final class OpenIdConnectClient
         return $jwt;
     }
 
+    /**
+     * @throws LogoutTokenIsInvalid
+     */
+    public function getLogoutToken(string $token): ?LogoutToken
+    {
+        $verifiedJwt = $this->verifyToken($token);
+        if (!$verifiedJwt) {
+            return null;
+        }
+
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+
+        return LogoutToken::create($verifiedJwt, $now);
+    }
+
     public function getJwtVerification(): JwtVerification
     {
         return new JwtVerification(
@@ -355,7 +376,6 @@ final class OpenIdConnectClient
             expectedIssuer: $this->options['issuer'],
             expectedAudience: $this->options['audience'] ?: $this->options['clientId'],
             trustedAudiences: $this->options['trustedAudiences'],
-            date: new \DateTimeImmutable(),
         );
     }
 
