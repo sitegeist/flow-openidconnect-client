@@ -41,6 +41,7 @@ final class JwtVerification
                 new IssuedBy($this->expectedIssuer),
                 new PermittedFor($this->expectedAudience),
                 new AudiencesAreTrusted($this->expectedAudience, $this->trustedAudiences),
+                new AllCriticalHeadersCanBeProcessed(),
             );
 
             return new JwtVerificationSucceeded();

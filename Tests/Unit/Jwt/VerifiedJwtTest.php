@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Flownative\OpenIdConnect\Client\Tests\Unit\Jwt;
 
+use Flownative\OpenIdConnect\Client\Jwt\AllCriticalHeadersCanBeProcessed;
 use Flownative\OpenIdConnect\Client\Jwt\AudiencesAreTrusted;
 use Flownative\OpenIdConnect\Client\Jwt\Jwk;
 use Flownative\OpenIdConnect\Client\Jwt\JwkSet;
@@ -221,6 +222,40 @@ class VerifiedJwtTest extends TestCase
                     'The token claims audience(s) not trusted by this client: someone-else',
                     new AudiencesAreTrusted('us', ['us']),
                 )
+            ]),
+        ];
+
+        yield 'wrong crit header format' => [
+            'jwt' => static fn (Builder $builder): Builder => $builder
+                ->withHeader('kid', 'my-key')
+                ->withHeader('crit', 'whatever')
+                ->issuedBy('me')
+                ->permittedFor('us', 'partner')
+                ->issuedAt((new \DateTimeImmutable(self::NOW))->modify('+60 seconds')),
+            'keyPair' => self::requireKeyPair(),
+            'tokenExpected' => false,
+            'expectedResult' => new JwtViolatesConstraints([
+                ConstraintViolation::error(
+                    'The token has critical headers that cannot be processed: "whatever"',
+                    new AllCriticalHeadersCanBeProcessed(),
+                ),
+            ]),
+        ];
+
+        yield 'unsupported crit header' => [
+            'jwt' => static fn (Builder $builder): Builder => $builder
+                ->withHeader('kid', 'my-key')
+                ->withHeader('crit', ['whatever'])
+                ->issuedBy('me')
+                ->permittedFor('us', 'partner')
+                ->issuedAt((new \DateTimeImmutable(self::NOW))->modify('+60 seconds')),
+            'keyPair' => self::requireKeyPair(),
+            'tokenExpected' => false,
+            'expectedResult' => new JwtViolatesConstraints([
+                ConstraintViolation::error(
+                    'The token has critical headers that cannot be processed: ["whatever"]',
+                    new AllCriticalHeadersCanBeProcessed(),
+                ),
             ]),
         ];
 
