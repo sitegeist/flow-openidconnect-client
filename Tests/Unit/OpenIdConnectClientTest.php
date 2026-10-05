@@ -1,4 +1,6 @@
 <?php
+declare(strict_types=1);
+
 namespace Flownative\OpenIdConnect\Client;
 
 /*
@@ -11,18 +13,29 @@ namespace Flownative\OpenIdConnect\Client;
  * source code.
  */
 
+use DateTimeImmutable;
 use Flownative\OAuth2\Client\Authorization;
+use Flownative\OAuth2\Client\BrowserBinding;
+use Flownative\OpenIdConnect\Client\Authentication\Nonce;
+use Flownative\OpenIdConnect\Client\Authentication\OpenIdConnectToken;
+use Flownative\OpenIdConnect\Client\Tests\Unit\Fixtures\JwtFixture;
+use RuntimeException;
+use Flownative\OpenIdConnect\Client\Tests\Unit\Fixtures\OpenIdConnectClientFixture;
 use GuzzleHttp\Client as HttpClient;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use GuzzleHttp\Psr7\Uri;
 use League\OAuth2\Client\Token\AccessToken;
 use Neos\Cache\Backend\TransientMemoryBackend;
 use Neos\Cache\Frontend\VariableFrontend;
 use Neos\Flow\Utility\Algorithms;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\StreamInterface;
+use Psr\Http\Message\UriInterface;
 use Psr\Log\LoggerInterface;
 use ReflectionException;
 
@@ -78,7 +91,7 @@ class OpenIdConnectClientTest extends TestCase
         $this->jwksCache = new VariableFrontend('jwks', new TransientMemoryBackend());
         $this->jwksCache->initializeObject();
 
-        $this->oAuthClient = $this->createPartialMock(OAuthClient::class, ['getAuthorization']);
+        $this->oAuthClient = $this->createStub(OAuthClient::class);
 
         $logger = $this->createStub(LoggerInterface::class);
 
@@ -89,10 +102,155 @@ class OpenIdConnectClientTest extends TestCase
         $this->inject($this->oidcClient, 'logger', $logger);
     }
 
-    /**
-     * @test
-     * @throws
-     */
+    #[Test]
+    public function startAuthorizationRemovesParametersOfEarlierLoginFromReturnUri(): void
+    {
+        $returnToUri = null;
+        $oAuthClient = $this->createStub(OAuthClient::class);
+        $oAuthClient->method('startAuthorization')->willReturnCallback(
+            function (string $clientId, UriInterface $givenReturnToUri) use (&$returnToUri): UriInterface {
+                $returnToUri = $givenReturnToUri;
+                return new Uri('https://id.example.com/authorize');
+            }
+        );
+        $client = OpenIdConnectClientFixture::createClient($oAuthClient, OpenIdConnectClientFixture::createHashService(), $this->createStub(LoggerInterface::class));
+        $authorizationIdQueryParameterName = OAuthClient::generateAuthorizationIdQueryParameterName(OAuthClient::SERVICE_TYPE);
+
+        $client->startAuthorization(new Uri('https://www.example.com/secure?page=2&' . OpenIdConnectToken::OIDC_PARAMETER_NAME . '=stale&' . $authorizationIdQueryParameterName . '=stale-id'), 'profile', Nonce::generate());
+
+        parse_str($returnToUri->getQuery(), $queryParameters);
+        static::assertSame(['page', OpenIdConnectToken::OIDC_PARAMETER_NAME], array_keys($queryParameters));
+        static::assertNotSame('stale', $queryParameters[OpenIdConnectToken::OIDC_PARAMETER_NAME]);
+    }
+
+    #[Test]
+    public function startAuthorizationBindsTheAuthorizationToTheCookieOfTheNonce(): void
+    {
+        $browserBinding = null;
+        $oAuthClient = $this->createStub(OAuthClient::class);
+        $oAuthClient->method('startAuthorization')->willReturnCallback(
+            function (string $clientId, UriInterface $returnToUri, string $scope, BrowserBinding $givenBrowserBinding) use (&$browserBinding): UriInterface {
+                $browserBinding = $givenBrowserBinding;
+                return new Uri('https://id.example.com/authorize');
+            }
+        );
+        $client = OpenIdConnectClientFixture::createClient($oAuthClient, OpenIdConnectClientFixture::createHashService(), $this->createStub(LoggerInterface::class));
+        $nonce = Nonce::generate();
+
+        $client->startAuthorization(new Uri('https://www.example.com/secure'), 'profile', $nonce);
+
+        $nonceCookie = $nonce->createCookie(CookieSettings::fromMiddlewareSettings([]));
+        static::assertSame($nonceCookie->getName(), $browserBinding->cookieName);
+        static::assertTrue(BrowserBinding::isPresentInCookies($browserBinding->cookieName, $browserBinding->getSecretHash(), [$nonceCookie->getName() => $nonceCookie->getValue()]));
+    }
+
+    #[Test]
+    public function startAuthorizationWarnsIfTheLoginCookiesAreNotSecure(): void
+    {
+        $oAuthClient = $this->createStub(OAuthClient::class);
+        $oAuthClient->method('startAuthorization')->willReturn(new Uri('https://id.example.com/authorize'));
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects($this->once())->method('warning')->with($this->stringContains('not secure'));
+        $client = OpenIdConnectClientFixture::createClient($oAuthClient, OpenIdConnectClientFixture::createHashService(), $logger);
+        OpenIdConnectClientFixture::inject($client, 'middlewareSettings', ['cookie' => ['secure' => false]]);
+
+        $client->startAuthorization(new Uri('https://www.example.com/secure'), 'profile', Nonce::generate());
+    }
+
+    #[Test]
+    public function startAuthorizationDoesNotWarnIfTheLoginCookiesAreSecure(): void
+    {
+        $oAuthClient = $this->createStub(OAuthClient::class);
+        $oAuthClient->method('startAuthorization')->willReturn(new Uri('https://id.example.com/authorize'));
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects($this->never())->method('warning');
+        $client = OpenIdConnectClientFixture::createClient($oAuthClient, OpenIdConnectClientFixture::createHashService(), $logger);
+
+        $client->startAuthorization(new Uri('https://www.example.com/secure'), 'profile', Nonce::generate());
+    }
+
+    #[Test]
+    public function getIdentityTokenRemovesTheClaimedAuthorizationEvenIfItContainsNoIdentityToken(): void
+    {
+        $authorization = new Authorization('oidc-test-authorization', 'oidc', OpenIdConnectClientFixture::CLIENT_ID, Authorization::GRANT_AUTHORIZATION_CODE, 'openid');
+        $authorization->setSerializedAccessToken(json_encode(new AccessToken(['access_token' => 'the-access-token']), JSON_THROW_ON_ERROR));
+        $oAuthClient = $this->createMock(OAuthClient::class);
+        $oAuthClient->expects($this->once())->method('claimAuthorization')->with('the-handle', ['the-cookie' => 'the-secret'])->willReturn($authorization);
+        $oAuthClient->expects($this->once())->method('removeAuthorization')->with('oidc-test-authorization');
+        $client = OpenIdConnectClientFixture::createClient($oAuthClient, OpenIdConnectClientFixture::createHashService(), $this->createStub(LoggerInterface::class));
+
+        $this->expectException(ServiceException::class);
+        $this->expectExceptionCode(1559208674);
+        $client->getIdentityToken('the-handle', ['the-cookie' => 'the-secret']);
+    }
+
+    #[Test]
+    public function getIdentityTokenAcceptsAuthorizationWithoutRefreshToken(): void
+    {
+        $authorization = new Authorization('oidc-test-authorization', 'oidc', OpenIdConnectClientFixture::CLIENT_ID, Authorization::GRANT_AUTHORIZATION_CODE, 'openid');
+        $authorization->setSerializedAccessToken(json_encode(new AccessToken(['access_token' => 'the-access-token', 'id_token' => JwtFixture::createSignedJwt(['sub' => 'the-subject'])]), JSON_THROW_ON_ERROR));
+        $oAuthClient = $this->createStub(OAuthClient::class);
+        $oAuthClient->method('claimAuthorization')->willReturn($authorization);
+        $client = OpenIdConnectClientFixture::createClient($oAuthClient, OpenIdConnectClientFixture::createHashService(), $this->createStub(LoggerInterface::class));
+
+        $tokenSet = $client->getIdentityToken('the-handle', ['the-cookie' => 'the-secret']);
+
+        static::assertSame('', $tokenSet->refreshToken);
+    }
+
+    #[Test]
+    public function getIdentityTokenReturnsTokenSetIfTheClaimedAuthorizationCannotBeRemoved(): void
+    {
+        $authorization = new Authorization('oidc-test-authorization', 'oidc', OpenIdConnectClientFixture::CLIENT_ID, Authorization::GRANT_AUTHORIZATION_CODE, 'openid');
+        $authorization->setSerializedAccessToken(json_encode(new AccessToken(['access_token' => 'the-access-token', 'id_token' => JwtFixture::createSignedJwt(['sub' => 'the-subject'])]), JSON_THROW_ON_ERROR));
+        $oAuthClient = $this->createStub(OAuthClient::class);
+        $oAuthClient->method('claimAuthorization')->willReturn($authorization);
+        $oAuthClient->method('removeAuthorization')->willThrowException(new RuntimeException('The database is gone'));
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects($this->once())->method('error')->with($this->stringContains('The database is gone'));
+        $client = OpenIdConnectClientFixture::createClient($oAuthClient, OpenIdConnectClientFixture::createHashService(), $logger);
+
+        $tokenSet = $client->getIdentityToken('the-handle', ['the-cookie' => 'the-secret']);
+
+        static::assertSame('the-subject', $tokenSet->identityToken->values['sub']);
+    }
+
+    #[Test]
+    public function getIdentityTokenKeepsTheExceptionOfTheTokenCheckIfTheClaimedAuthorizationCannotBeRemoved(): void
+    {
+        $authorization = new Authorization('oidc-test-authorization', 'oidc', OpenIdConnectClientFixture::CLIENT_ID, Authorization::GRANT_AUTHORIZATION_CODE, 'openid');
+        $authorization->setSerializedAccessToken(json_encode(new AccessToken(['access_token' => 'the-access-token']), JSON_THROW_ON_ERROR));
+        $oAuthClient = $this->createStub(OAuthClient::class);
+        $oAuthClient->method('claimAuthorization')->willReturn($authorization);
+        $oAuthClient->method('removeAuthorization')->willThrowException(new RuntimeException('The database is gone'));
+        $client = OpenIdConnectClientFixture::createClient($oAuthClient, OpenIdConnectClientFixture::createHashService(), $this->createStub(LoggerInterface::class));
+
+        $this->expectException(ServiceException::class);
+        $this->expectExceptionCode(1559208674);
+        $client->getIdentityToken('the-handle', ['the-cookie' => 'the-secret']);
+    }
+
+    #[Test]
+    public function oAuthClientReturnsTheClientSecretOfTheService(): void
+    {
+        $oAuthClient = new OAuthClient(OpenIdConnectClientFixture::SERVICE_NAME);
+        $oAuthClient->setOpenIdConnectClient(OpenIdConnectClientFixture::createClient($this->createStub(OAuthClient::class), OpenIdConnectClientFixture::createHashService(), $this->createStub(LoggerInterface::class)));
+
+        static::assertSame(OpenIdConnectClientFixture::CLIENT_SECRET, $oAuthClient->getClientSecret(OpenIdConnectClientFixture::CLIENT_ID));
+    }
+
+    #[Test]
+    public function oAuthClientRejectsClientSecretRequestForAnotherClientId(): void
+    {
+        $oAuthClient = new OAuthClient(OpenIdConnectClientFixture::SERVICE_NAME);
+        $oAuthClient->setOpenIdConnectClient(OpenIdConnectClientFixture::createClient($this->createStub(OAuthClient::class), OpenIdConnectClientFixture::createHashService(), $this->createStub(LoggerInterface::class)));
+
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionCode(1789395653);
+        $oAuthClient->getClientSecret('another-client');
+    }
+
+    #[Test]
     public function getJwksReturnsJwksAndStoresItInCache(): void
     {
         $mockHttpClient = $this->createMock(HttpClient::class);
@@ -116,14 +274,11 @@ class OpenIdConnectClientTest extends TestCase
         static::assertSame($expectedJwks, $this->jwksCache->get($cacheEntryIdentifier));
     }
 
-    /**
-     * @test
-     * @throws
-     */
+    #[Test]
     public function getJwksThrowsExceptionOnFailedDiscoveryRequest(): void
     {
         $mockHttpClient = $this->createMock(HttpClient::class);
-        $mockHttpRequest = $this->createMock(Request::class);
+        $mockHttpRequest = $this->createStub(Request::class);
 
         $this->inject($this->oidcClient, 'settings', $this->settings);
         $this->inject($this->oidcClient, 'httpClient', $mockHttpClient);
@@ -135,10 +290,7 @@ class OpenIdConnectClientTest extends TestCase
         $this->oidcClient->getJwks();
     }
 
-    /**
-     * @test
-     * @throws
-     */
+    #[Test]
     public function getJwksThrowsExceptionOnMalformedResponseFromDiscoveryService(): void
     {
         $mockHttpClient = $this->createMock(HttpClient::class);
@@ -157,10 +309,7 @@ class OpenIdConnectClientTest extends TestCase
         $this->oidcClient->getJwks();
     }
 
-    /**
-     * @test
-     * @throws
-     */
+    #[Test]
     public function getJwksReturnsJwksFromCacheIfItExists(): void
     {
         $this->inject($this->oidcClient, 'settings', $this->settings);
@@ -173,17 +322,14 @@ class OpenIdConnectClientTest extends TestCase
         static::assertSame($expectedJwks, $this->oidcClient->getJwks());
     }
 
-    /**
-     * @test
-     * @throws
-     */
+    #[Test]
     public function getAccessTokenReturnsAccessTokenFromAuthorization(): void
     {
         $serviceName = 'test';
         $clientId = 'the-client';
         $clientSecret = 'the-secret';
-        $scope = 'some openid';
-        $authorizationId = Authorization::generateAuthorizationIdForClientCredentialsGrant($serviceName, $clientId, $clientSecret, $scope, []);
+        $scope = 'some';
+        $authorizationId = Authorization::generateAuthorizationIdForClientCredentialsGrant($serviceName, $clientId, $scope, []);
 
         $expectedAccessToken = new AccessToken([
             'access_token' => Algorithms::generateRandomToken(500),
@@ -193,12 +339,102 @@ class OpenIdConnectClientTest extends TestCase
         $authorization = new Authorization($authorizationId, $serviceName, $clientId, Authorization::GRANT_CLIENT_CREDENTIALS, $scope);
         $authorization->setSerializedAccessToken(json_encode($expectedAccessToken, JSON_THROW_ON_ERROR, 512));
 
-        $this->oAuthClient->method('getAuthorization')->with($authorizationId)->willReturn($authorization);
+        $oAuthClient = $this->createMock(OAuthClient::class);
+        $oAuthClient->method('getAuthorization')->willReturnMap([[$authorizationId, $authorization]]);
+        $oAuthClient->expects($this->never())->method('requestAccessToken');
+        $this->inject($this->oidcClient, 'oAuthClient', $oAuthClient);
 
         $actualAccessToken = $this->oidcClient->getAccessToken($serviceName, $clientId, $clientSecret, $scope);
 
         static::assertSame($expectedAccessToken->getToken(), $actualAccessToken->getToken());
         static::assertSame($expectedAccessToken->getExpires(), $actualAccessToken->getExpires());
+    }
+
+    #[Test]
+    public function getAccessTokenRequestsTokenWithTheGivenScopeOnly(): void
+    {
+        $authorizationId = Authorization::generateAuthorizationIdForClientCredentialsGrant('test', 'the-client', 'read', ['audience' => 'https://api.example.com']);
+        $oAuthClient = $this->createMock(OAuthClient::class);
+        $oAuthClient->method('getAuthorization')->willReturnOnConsecutiveCalls(null, self::createAuthorizationWithToken($authorizationId, time() + 3600));
+        $oAuthClient->expects($this->once())->method('requestAccessToken')->with('test', 'the-client', 'the-secret', 'read', ['audience' => 'https://api.example.com']);
+        $this->inject($this->oidcClient, 'oAuthClient', $oAuthClient);
+
+        $this->oidcClient->getAccessToken('test', 'the-client', 'the-secret', 'read', ['audience' => 'https://api.example.com']);
+    }
+
+    #[Test]
+    public function getAccessTokenRenewsTokenShortlyBeforeItExpires(): void
+    {
+        $authorizationId = Authorization::generateAuthorizationIdForClientCredentialsGrant('test', 'the-client', 'read');
+        $renewedAuthorization = self::createAuthorizationWithToken($authorizationId, time() + 3600);
+        $oAuthClient = $this->createMock(OAuthClient::class);
+        $oAuthClient->method('getAuthorization')->willReturnOnConsecutiveCalls(self::createAuthorizationWithToken($authorizationId, time() + 10), $renewedAuthorization);
+        $oAuthClient->expects($this->once())->method('requestAccessToken');
+        $this->inject($this->oidcClient, 'oAuthClient', $oAuthClient);
+
+        $accessToken = $this->oidcClient->getAccessToken('test', 'the-client', 'the-secret', 'read');
+
+        static::assertSame($renewedAuthorization->getAccessToken()->getToken(), $accessToken->getToken());
+    }
+
+    #[Test]
+    public function getAccessTokenUsesTokenWithoutExpirationTimeUntilItsAuthorizationExpires(): void
+    {
+        $authorization = self::createAuthorizationWithToken(Authorization::generateAuthorizationIdForClientCredentialsGrant('test', 'the-client', 'read'), null);
+        $authorization->setExpires(new DateTimeImmutable('+10 minutes'));
+        $oAuthClient = $this->createMock(OAuthClient::class);
+        $oAuthClient->method('getAuthorization')->willReturn($authorization);
+        $oAuthClient->expects($this->never())->method('requestAccessToken');
+        $this->inject($this->oidcClient, 'oAuthClient', $oAuthClient);
+
+        $accessToken = $this->oidcClient->getAccessToken('test', 'the-client', 'the-secret', 'read');
+
+        static::assertSame($authorization->getAccessToken()->getToken(), $accessToken->getToken());
+    }
+
+    #[Test]
+    public function getAccessTokenRenewsTokenWithoutExpirationTimeWhenItsAuthorizationExpires(): void
+    {
+        $authorization = self::createAuthorizationWithToken(Authorization::generateAuthorizationIdForClientCredentialsGrant('test', 'the-client', 'read'), null);
+        $authorization->setExpires(new DateTimeImmutable('+10 seconds'));
+        $oAuthClient = $this->createMock(OAuthClient::class);
+        $oAuthClient->method('getAuthorization')->willReturn($authorization);
+        $oAuthClient->expects($this->once())->method('requestAccessToken');
+        $this->inject($this->oidcClient, 'oAuthClient', $oAuthClient);
+
+        $this->oidcClient->getAccessToken('test', 'the-client', 'the-secret', 'read');
+    }
+
+    private static function createAuthorizationWithToken(string $authorizationId, ?int $expirationTimestamp): Authorization
+    {
+        $tokenValues = ['access_token' => Algorithms::generateRandomToken(40)];
+        if ($expirationTimestamp !== null) {
+            $tokenValues['expires'] = $expirationTimestamp;
+        }
+        $authorization = new Authorization($authorizationId, 'test', 'the-client', Authorization::GRANT_CLIENT_CREDENTIALS, 'read');
+        $authorization->setSerializedAccessToken(json_encode(new AccessToken($tokenValues), JSON_THROW_ON_ERROR));
+        return $authorization;
+    }
+
+    public static function authorizationScopes(): array
+    {
+        return [
+            'empty scope with refresh token' => ['', true, 'openid offline_access'],
+            'empty scope without refresh token' => ['', false, 'openid'],
+            'custom scope with refresh token' => ['profile email', true, 'profile email openid offline_access'],
+            'custom scope without refresh token' => ['profile email', false, 'profile email openid'],
+            'duplicate identifiers are removed' => ['openid offline_access', true, 'openid offline_access'],
+            'explicit offline_access is kept' => ['profile offline_access', false, 'profile offline_access openid'],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('authorizationScopes')]
+    public function buildAuthorizationScopeAddsRequiredScopeIdentifiers(string $scope, bool $requestRefreshToken, string $expectedScope): void
+    {
+        $method = new \ReflectionMethod(OpenIdConnectClient::class, 'buildAuthorizationScope');
+
+        static::assertSame($expectedScope, $method->invoke($this->oidcClient, $scope, $requestRefreshToken));
     }
 
     /**
@@ -229,7 +465,6 @@ class OpenIdConnectClientTest extends TestCase
             $target->$methodName($dependency);
         } elseif ($objectReflection->hasProperty($name)) {
             $property = $objectReflection->getProperty($name);
-            $property->setAccessible(true);
             $property->setValue($target, $dependency);
         } else {
             throw new \RuntimeException('Could not inject ' . $name . ' into object of type ' . get_class($target));

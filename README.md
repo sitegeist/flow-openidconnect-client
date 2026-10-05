@@ -18,6 +18,9 @@ JWTs are easy to handle in client- and server-side applications. The
 data contained in the ID token is usually signed and can optionally be
 encrypted.
 
+Upgrading from version 5? Read the
+[migration guide](Documentation/Migration-6.0.md).
+
 ## Feature Overview
 
 This plugin acts as a Flow authentication provider. It allows you to
@@ -102,7 +105,8 @@ identifier.
 In order to use this plugin you need:
 
 - an OIDC Identity Provider which provides auto discovery
-- an application (such as Neos), based on Flow 7.3 or higher
+- an application (such as Neos) based on Flow 8.3 (8.3.13 or later),
+  Flow 8.4 or Flow 9, running on PHP 8.3 or later
 
 ## Installation
 
@@ -262,11 +266,9 @@ Flownative:
             clientId: 'abcdefghijklmnopqrstuvwxyz01234567890'
             clientSecret: 'YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU2Nzg5MA=='
       middleware:
-        cookie:      
-          # For testing purposes allow cookies without HTTPS:
+        cookie:
+          # Only for development without HTTPS, never in production:
           secure: false
-          # Create an HTTP only cookie for increased security
-          httpOnly: true
 
 Neos:
   Flow:
@@ -287,7 +289,7 @@ Neos:
             entryPoint: 'Flownative\OpenIdConnect\Client\Authentication\OpenIdConnectEntryPoint'
             entryPointOptions:
               serviceName: 'test'
-              scopes: ['sub', 'profile', 'name']
+              scope: 'profile name'
 
         authenticationStrategy: atLeastOneToken
 
@@ -296,6 +298,114 @@ Neos:
 Without further programming you need to manually create a Neos user
 which has the same username as the one provided in the "sub" claim by
 the OIDC identity provider.
+
+### Binding the Login to the Browser
+
+Before the entry point redirects the browser to the identity provider,
+it stores a random secret in a cookie named
+"__Host-flownative_oidc_nonce_…". The identity provider receives a hash of
+this secret as "nonce" and copies it into the identity token. When the
+browser returns, the token is only accepted if the browser has the
+matching cookie. A login which was started in another browser is
+therefore rejected. The cookie expires after one hour and is removed
+after a successful login.
+
+The identity provider must return the nonce in the identity token, as
+OpenID Connect requires. If it doesn't, every login fails and the
+security log contains "contains no nonce".
+
+If a login is rejected when the browser returns, the entry point
+doesn't start another login, because the identity provider would
+usually send the user back right away and the login would be rejected
+again. Instead, it answers with status 403 and a short page with a link
+to try again. Logins which are in progress while you update this package
+end on this page once.
+
+If you start an authorization yourself, pass a new nonce to
+`OpenIdConnectClient::startAuthorization()` and set its cookie on the
+response which redirects the browser. This response must not be
+cached, because the cookie contains the secret:
+
+```php
+// $this->middlewareSettings is injected with
+// #[Flow\InjectConfiguration(path: 'middleware', package: 'Flownative.OpenIdConnect.Client')]
+$cookieSettings = CookieSettings::fromMiddlewareSettings($this->middlewareSettings);
+$nonce = Nonce::generate();
+$uri = $client->startAuthorization($returnToUri, 'profile email', $nonce);
+$this->response->setCookie($nonce->createCookie($cookieSettings));
+$this->response->setHttpHeader('Cache-Control', 'no-store');
+$this->redirectToUri($uri);
+```
+
+### JWT Cookie
+
+After a successful login, the middleware stores the identity token in a
+cookie, so that the browser sends it with the following requests. By
+default, the cookie is only sent over HTTPS ("secure") and cannot be
+read by JavaScript ("httpOnly").
+
+With "secure" enabled, the cookie is named "__Host-flownative_oidc_jwt".
+Browsers only accept a cookie with this prefix if the site itself sets
+it over HTTPS, so that another subdomain can't plant a cookie with a
+login of its own. A name configured with "jwtCookieName" or
+"cookie.name" is used as it is, so consider giving it the same prefix.
+Flow's session cookie can get the prefix as well, through the settings
+"Neos.Flow.session.name" and "Neos.Flow.session.cookie".
+
+The middleware renews the cookie with every response to a logged-in
+user. These responses are marked as private, so that shared caches
+like proxies or CDNs don't store them. For the same reason, the
+middleware removes the headers "CDN-Cache-Control" and
+"Surrogate-Control" from these responses.
+
+Requests with a bearer token in the "Authorization" header neither set
+nor remove the cookie, because the client manages the token itself.
+
+Only set "httpOnly" to false if your frontend needs to read the token
+from the cookie. Every script running on your pages, including injected
+ones, can then read the token as well.
+
+### Refreshing expired identity tokens
+
+The entry point requests the scope "offline_access" in addition to
+"openid" and the configured scope. With this scope, identity providers
+like Auth0 or Microsoft Entra ID issue a refresh token. The refresh
+token is stored in the user's session and is used to refresh an
+expired identity token without an interactive login.
+
+After a login, the session gets a new identifier, so that a session
+which was known before can't reach the refresh token. The refresh token
+is bound to the identity tokens which were issued last for this
+session, and only these identity tokens are refreshed. Usually this is
+a single identity token. If a browser sends several requests in
+parallel right after the identity token expired, each of these requests
+may refresh it, and all identity tokens they receive stay refreshable,
+whichever of them the browser keeps. A refreshed identity token must
+have the same issuer and subject as the expired one. Requests which a
+browser sent with a previous identity token while another request
+refreshed it receive the refreshed identity token from the session,
+for up to ten minutes after the refresh. If the identity provider
+rotates refresh tokens, the new refresh token replaces the old one in
+the session. Refresh tokens which earlier versions of this package
+stored are not used anymore, so users log in once more when their
+identity token expires after an update.
+
+Identity tokens which a client sends in the "Authorization" header are
+not refreshed, because the client would never receive the new token.
+Such clients must refresh their tokens themselves.
+
+Some identity providers treat this scope differently. Google rejects
+it with an "invalid_scope" error. Keycloak issues an offline token
+which does not expire with the SSO session. If you don't need refresh
+tokens, or your identity provider does not support the scope, disable
+it in the entry point options:
+
+```yaml
+            entryPointOptions:
+              serviceName: 'test'
+              scope: 'profile name'
+              requestRefreshToken: false
+```
 
 Note: Check the [Flownative.OpenidConnect.Neos](https://github.com/flownative/openidconnect-neos) package for a working implementation.
 
@@ -482,10 +592,15 @@ differently: if there's an account with the same username which is
 provided by the identity token, roles of that (persisted) account can be
 used.
 
-Given that the identity token provides a claim called "email" and that
-an account (for example, a Neos user account) exists using an email
-address as its account identifier, you may configure the provider as
-follows:
+Anyone who can present the identifier of an existing account receives
+its roles. Therefore, use a claim which is controlled by the identity
+provider and never changes for a user, ideally "sub". Claims like
+"email" or "preferred_username" can often be changed by the users
+themselves.
+
+Given that an account (for example, a Neos user account) exists using
+the subject of the identity provider as its account identifier, you may
+configure the provider as follows:
 
 ```
 …
@@ -496,36 +611,109 @@ follows:
                 label: 'OpenID Connect'
                 provider: 'Flownative\OpenIdConnect\Client\Authentication\OpenIdConnectProvider'
                 providerOptions:
-                  accountIdentifierTokenValueName: 'email'
+                  accountIdentifierTokenValueName: 'sub'
                   addRolesFromExistingAccount: true
                   …
  
 ```
 
-When a user logs in and her identity token has a value "email"
-containing "alice@example.com", the OpenID Connect provider will
-automatically assign any roles which are assigned to a Flow account with
-the same account identifier.
+When a user logs in, the OpenID Connect provider will automatically
+assign any roles which are assigned to a Flow account with the same
+account identifier. The identifiers must match exactly, apart from upper
+and lower case.
+
+If you use "email" as account identifier, the provider only accepts
+tokens whose "email_verified" claim is true. Only disable this check
+with the "requireVerifiedEmail" option if your identity provider
+verifies all email addresses itself but doesn't send the claim:
+
+```
+…
+                providerOptions:
+                  accountIdentifierTokenValueName: 'email'
+                  requireVerifiedEmail: false
+                  …
+```
+
+Microsoft Entra ID is not such an identity provider. Its "email" claim
+is neither verified nor fixed, so use the "oid" or "sub" claim as
+account identifier instead.
+
+The check only applies to the "email" claim. If you use a custom claim
+containing an email address, for example one added by an Auth0 action,
+make sure that only verified addresses are written into it.
 
 You may mix "rolesFromClaims" with "addRolesFromExistingAccount". In
 that case roles from claims and existing accounts will be merged.
 
 Again, check logs for hints if things are not working as expected.
 
-## More Authentication Provider Options
+## Token Validation
 
-When you are using the OpenID Connect Authentication Provider, you can
-provide options for additional security measures.
+The authentication provider only accepts a token if all of the following
+checks pass:
 
-### Audience Pinning
+- the signature is valid and was created with a key of the identity
+  provider
+- the token was issued by the issuer of the configured service ("iss")
+- the token was issued for the audience of your application ("aud")
+- the token is not expired ("exp") and already valid ("nbf", "iat")
+- the claim used as account identifier is present, and confirmed by
+  "email_verified" if it is the "email" claim
 
-It is recommended to specify the "audience" identifier of your
-application. That way, tokens issued by your identity provider will only
-accepted for authentication, if the audience string of the token ("aud")
-matches the string configured in your application. Without this
-configuration, your application would accept any token of your identity
-provider, if it has a valid signature and comes with the correct roles
-claim.
+Tokens which fail a check are rejected and the reason is written to the
+security log.
+
+### Issuer
+
+The expected issuer is taken from the discovery document of the service.
+If you don't use discovery, configure it explicitly:
+
+```yaml
+Flownative:
+  OpenIdConnect:
+    Client:
+      services:
+        myService:
+          options:
+            issuer: 'https://id.example.com/'
+            jwksUri: 'https://id.example.com/.well-known/jwks.json'
+```
+
+Some identity providers issue tokens with a different issuer than the
+one published in their discovery document. Examples are version 1
+access tokens of Microsoft Entra ID, or a Keycloak server whose
+discovery document is retrieved through an internal address. In that
+case, set the expected issuer in the provider options. It takes
+precedence over the issuer of the service and may be a list:
+
+```
+…
+                providerOptions:
+                  issuer:
+                    - 'https://login.microsoftonline.com/{tenantid}/v2.0'
+                    - 'https://sts.windows.net/{tenantid}/'
+                  …
+```
+
+Multi-tenant applications of Microsoft Entra ID use an issuer containing
+the placeholder "{tenantid}". It is replaced by the "tid" claim of each
+token, so tokens of all tenants are accepted as long as they are issued
+for your application. Users of any tenant can then log in, so restrict
+access through roles, and don't use a claim like "email" as account
+identifier, because it is not unique across tenants.
+
+### Audience
+
+By default, a token must contain the client id of the service in its
+"aud" claim. This is what identity providers put into identity tokens
+issued for your application.
+
+Access tokens for an API usually carry the identifier of that API
+instead. In that case, configure the expected audience explicitly. You
+may also specify a list, and a token must contain at least one of them.
+Keycloak only adds an audience to access tokens if the client has an
+audience mapper.
 
 ```
 …
@@ -537,6 +725,20 @@ claim.
                 provider: 'Flownative\OpenIdConnect\Client\Authentication\OpenIdConnectProvider'
                 providerOptions:
                   audience: 'https://www.example.com/my-application'
+                  …
+```
+
+### Clock Leeway
+
+The clocks of your application and the identity provider may differ
+slightly. When checking the time claims of a token, the provider allows
+a difference of 60 seconds by default. You can change it with the
+"leeway" option:
+
+```
+…
+                providerOptions:
+                  leeway: 30
                   …
 ```
 

@@ -1,11 +1,15 @@
 <?php
+declare(strict_types=1);
 
 namespace Flownative\OpenIdConnect\Client;
 
 use Doctrine\ORM\Exception\ORMException;
 use Doctrine\ORM\OptimisticLockException;
+use Exception;
 use Flownative\OAuth2\Client\Authorization;
 use Flownative\OAuth2\Client\OAuthClientException;
+use Flownative\OAuth2\Client\UnknownAuthorizationHandleException;
+use Flownative\OpenIdConnect\Client\Authentication\Nonce;
 use Flownative\OpenIdConnect\Client\Authentication\OpenIdConnectToken;
 use Flownative\OpenIdConnect\Client\Authentication\TokenArguments;
 use Flownative\OpenIdConnect\Client\BackChannelLogout\LogoutToken;
@@ -16,71 +20,26 @@ use Flownative\OpenIdConnect\Client\Jwt\JwtVerification;
 use Flownative\OpenIdConnect\Client\Jwt\VerifiedJwt;
 use GuzzleHttp\Client as HttpClient;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Psr7\Query;
+use InvalidArgumentException;
+use JsonException;
 use League\OAuth2\Client\Provider\Exception\IdentityProviderException;
 use League\OAuth2\Client\Token\AccessToken;
 use Neos\Cache\Exception as CacheException;
 use Neos\Cache\Frontend\VariableFrontend;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Log\Utility\LogEnvironment;
+use Neos\Flow\Security\Cryptography\HashService;
 use Neos\Flow\ObjectManagement\DependencyInjection\DependencyProxy;
 use Neos\Utility\Arrays;
 use Psr\Http\Message\UriInterface;
 use Psr\Log\LoggerInterface;
+use RuntimeException;
+use SodiumException;
 
 final class OpenIdConnectClient
 {
-    /**
-     * Service name which identifies the configuration of this OpenID Connect Client instance
-     *
-     * @var string
-     */
-    private $serviceName;
-
-    /**
-     * Options set for this client
-     *
-     * @var array
-     */
-    private $options;
-
-    /**
-     * Instance of the OAuth Client used for authorization
-     *
-     * @var OAuthClient
-     */
-    private $oAuthClient;
-
-    /**
-     * @Flow\InjectConfiguration
-     * @var array
-     */
-    protected $settings;
-
-    /**
-     * @var HttpClient
-     */
-    protected $httpClient;
-
-    /**
-     * @Flow\Inject(name="Neos.Flow:SecurityLogger")
-     * @var LoggerInterface
-     */
-    protected $logger;
-
-    /**
-     * @var VariableFrontend
-     */
-    protected $discoveryCache;
-
-    /**
-     * @var VariableFrontend
-     */
-    protected $jwksCache;
-
-    /**
-     * @const array
-     */
-    private const DEFAULT_OPTIONS = [
+    private const array DEFAULT_OPTIONS = [
         'issuer' => '',
         'clientId' => '',
         'clientSecret' => '',
@@ -93,10 +52,7 @@ final class OpenIdConnectClient
         'trustedAudiences' => [],
     ];
 
-    /**
-     * @const array
-     */
-    private const DISCOVERY_OPTIONS_MAPPING = [
+    private const array DISCOVERY_OPTIONS_MAPPING = [
         'issuer' => 'issuer',
         'authorization_endpoint' => 'authorizationEndpoint',
         'token_endpoint' => 'tokenEndpoint',
@@ -106,8 +62,45 @@ final class OpenIdConnectClient
     ];
 
     /**
-     * @param string $serviceName
+     * Service name which identifies the configuration of this OpenID Connect Client instance
      */
+    private const int ACCESS_TOKEN_RENEWAL_MARGIN = 30; # seconds before expiration
+
+    private string $serviceName;
+
+    private array $options = [];
+
+    private OAuthClient $oAuthClient;
+
+    #[Flow\InjectConfiguration]
+    protected array $settings;
+
+    #[Flow\InjectConfiguration(path: 'middleware')]
+    protected array $middlewareSettings = [];
+
+    protected HttpClient $httpClient;
+
+    /**
+     * Not lazy, because a named injection would otherwise receive a dependency proxy which does not match the type.
+     */
+    #[Flow\Inject(name: 'Neos.Flow:SecurityLogger', lazy: false)]
+    protected ?LoggerInterface $logger = null;
+
+    #[Flow\Inject]
+    protected HashService $hashService;
+
+    /**
+     * Not typed, because Flow injects the caches configured in Objects.yaml lazily and the dependency proxy would not match the type.
+     *
+     * @var VariableFrontend
+     */
+    protected $discoveryCache;
+
+    /**
+     * @var VariableFrontend
+     */
+    protected $jwksCache;
+
     public function __construct(string $serviceName)
     {
         $this->serviceName = $serviceName;
@@ -171,53 +164,45 @@ final class OpenIdConnectClient
         $this->oAuthClient->setOpenIdConnectClient($this);
     }
 
-    /**
-     * @return array
-     */
     public function getOptions(): array
     {
         return $this->options;
     }
 
     /**
-     * Returns OAuth access token, using an OpenID Connect scope
-     *
-     * This method is used using the OAuth Client Credentials Flow for machine-to-machine applications.
-     * Therefore the grant type must be Authorization::GRANT_CLIENT_CREDENTIALS. You need to specify the
-     * client identifier and client secret and may optionally specify a scope.
+     * Returns an OAuth access token of the Client Credentials Flow for machine-to-machine applications
      *
      * This method will check if an access token already exists (stored in an Authorization record), and
-     * if it doesn't, requests one via OAuth. The authorization id which leads to the Authorization record
-     * is deterministic and derived from the service name, client id, client secret and scope.
+     * requests one via OAuth if it doesn't or if it expires soon. The authorization id which leads to the
+     * Authorization record is deterministic and derived from the service name, client id, scope and
+     * additional parameters.
      *
      * @param string $serviceName The service name used in the OAuth configuration
-     * @param string $scope The authorization scope. Must be identifiers separated by space. "openid" will automatically be requested
+     * @param string $scope The authorization scope. Must be identifiers separated by space. With an empty scope, the identity provider uses its default scope
      * @param array $additionalParameters Additional parameters to provide in the request body while requesting the token. For example ['audience' => 'https://www.example.com/api/v1']
      * @throws AuthenticationException
      * @throws ConnectionException
      * @throws IdentityProviderException
      * @throws GuzzleException
-     * @throws \SodiumException
+     * @throws SodiumException
      */
     public function getAccessToken(string $serviceName, string $clientId, string $clientSecret, string $scope, array $additionalParameters = []): AccessToken
     {
-        $scope = trim(implode(' ', array_unique(array_merge(explode(' ', $scope), ['openid']))));
-
         $accessToken = null;
-        $authorizationId = Authorization::generateAuthorizationIdForClientCredentialsGrant($serviceName, $clientId, $clientSecret, $scope, $additionalParameters);
+        $authorizationId = Authorization::generateAuthorizationIdForClientCredentialsGrant($serviceName, $clientId, $scope, $additionalParameters);
         $authorization = $this->getAuthorization($authorizationId);
 
         if ($authorization !== null) {
             $accessToken = $authorization->getAccessToken();
             if ($accessToken === null) {
-                $this->logger->warning(sprintf('OpenID Connect Client: Authorization %s for service "%s", clientId "%s" contained no token', $authorizationId, $serviceName, $clientId), LogEnvironment::fromMethodName(__METHOD__));
-            } elseif ($accessToken->hasExpired()) {
-                $this->logger->info(sprintf('OpenID Connect Client: Access token contained in authorization %s for service "%s", clientId "%s" has expired', $authorizationId, $serviceName, $clientId), LogEnvironment::fromMethodName(__METHOD__));
+                $this->logger?->warning(sprintf('OpenID Connect Client: Authorization %s for service "%s", clientId "%s" contained no token', $authorizationId, $serviceName, $clientId), LogEnvironment::fromMethodName(__METHOD__));
+            } elseif ($this->expiresSoon($authorization, $accessToken)) {
+                $this->logger?->info(sprintf('OpenID Connect Client: Access token contained in authorization %s for service "%s", clientId "%s" has expired or expires soon', $authorizationId, $serviceName, $clientId), LogEnvironment::fromMethodName(__METHOD__));
             }
         }
 
-        if ($accessToken === null || $accessToken->hasExpired()) {
-            $this->logger->info(sprintf('OpenID Connect Client: Requesting new access token for service %s using client id %s %s', $serviceName, $clientId, ($scope ? 'requesting scope "' . $scope . '"' : 'requesting no scope')), LogEnvironment::fromMethodName(__METHOD__));
+        if ($authorization === null || $accessToken === null || $this->expiresSoon($authorization, $accessToken)) {
+            $this->logger?->info(sprintf('OpenID Connect Client: Requesting new access token for service %s using client id %s %s', $serviceName, $clientId, ($scope ? 'requesting scope "' . $scope . '"' : 'requesting no scope')), LogEnvironment::fromMethodName(__METHOD__));
 
             $this->oAuthClient->requestAccessToken($serviceName, $clientId, $clientSecret, $scope, $additionalParameters);
             $authorization = $this->getAuthorization($authorizationId);
@@ -229,10 +214,8 @@ final class OpenIdConnectClient
             if ($accessToken === null) {
                 throw new AuthenticationException(sprintf('OpenID Connect Client: Failed retrieving access token for service "%s", clientId "%s": Authorization %s contains no token', $serviceName, $clientId, $authorizationId));
             }
-
         } else {
-            $expiresInSeconds = $accessToken->getExpires() - time();
-            $this->logger->debug(sprintf('OpenID Connect Client: Using existing access token for service %s using client id %s %s. Remaining lifetime: %d seconds', $serviceName, $clientId, ($scope ? 'with scope "' . $scope . '"' : 'without a scope'), $expiresInSeconds), LogEnvironment::fromMethodName(__METHOD__));
+            $this->logger?->debug(sprintf('OpenID Connect Client: Using existing access token for service %s using client id %s %s', $serviceName, $clientId, ($scope ? 'with scope "' . $scope . '"' : 'without a scope')), LogEnvironment::fromMethodName(__METHOD__));
         }
 
         return $accessToken;
@@ -241,53 +224,77 @@ final class OpenIdConnectClient
     /**
      * Start authorization via OAuth, with the Authorization Code Flow, using an OpenID Connect scope
      *
-     * This method is an interactive authorization, which usually requires a browser to work.
+     * This method is an interactive authorization, which usually requires a browser to work. The response which redirects the browser
+     * must also set the cookie of the given nonce, otherwise the login is rejected when the browser returns.
      *
      * @param string $scope The authorization scope. Must be identifiers separated by space. "openid" will automatically be requested
+     * @param bool $requestRefreshToken If "offline_access" should be requested, so that an expired identity token can be refreshed
      * @throws OAuthClientException
      */
-    public function startAuthorization(UriInterface $returnToUri, string $scope): UriInterface
+    public function startAuthorization(UriInterface $returnToUri, string $scope, Nonce $nonce, bool $requestRefreshToken = true): UriInterface
     {
-        $returnArguments = (string)TokenArguments::fromArray([TokenArguments::SERVICE_NAME => $this->serviceName]);
+        $returnArguments = (string)TokenArguments::fromArray([TokenArguments::SERVICE_NAME => $this->serviceName, TokenArguments::NONCE => $nonce->value], $this->hashService);
         if (str_starts_with($returnArguments, 'ERROR')) {
-            throw new \RuntimeException(substr($returnArguments, 6));
+            throw new RuntimeException(substr($returnArguments, 6));
         }
-        $returnToUri = $returnToUri->withQuery(trim($returnToUri->getQuery() . '&' . OpenIdConnectToken::OIDC_PARAMETER_NAME . '=' . urlencode($returnArguments), '&'));
-        $scope = trim(implode(' ', array_unique(array_merge(explode(' ', $scope), ['openid', 'offline_access']))));
+
+        // After a rejected return, the URI still contains the parameters of that login, which must not be passed on again
+        $queryParameters = Query::parse($returnToUri->getQuery());
+        unset($queryParameters[OAuthClient::generateAuthorizationIdQueryParameterName(OAuthClient::SERVICE_TYPE)]);
+        $queryParameters[OpenIdConnectToken::OIDC_PARAMETER_NAME] = $returnArguments;
+        $returnToUri = $returnToUri->withQuery(Query::build($queryParameters));
 
         if (empty($this->options['clientId']) || empty($this->options['clientSecret'])) {
-            throw new \RuntimeException(sprintf('OpenID Connect Client: Authorization Code Flow requires "clientId" and "clientSecret" to be configured for service "%s".', $this->serviceName), 1596456168);
+            throw new RuntimeException(sprintf('OpenID Connect Client: Authorization Code Flow requires "clientId" and "clientSecret" to be configured for service "%s".', $this->serviceName), 1596456168);
         }
-        return $this->oAuthClient->startAuthorization($this->options['clientId'], $this->options['clientSecret'], $returnToUri, $scope);
+        $cookieSettings = CookieSettings::fromMiddlewareSettings($this->middlewareSettings);
+        if (!$cookieSettings->secure) {
+            $this->logger?->warning(sprintf('OpenID Connect Client: The login cookies for service "%s" are not secure. This setting is only meant for development without HTTPS.', $this->serviceName), LogEnvironment::fromMethodName(__METHOD__));
+        }
+        // The cookie of the nonce also binds the authorization to the browser, so that the code is only redeemed for the browser which started the login
+        $browserBinding = $nonce->createBrowserBinding($cookieSettings);
+        return $this->oAuthClient->startAuthorization($this->options['clientId'], $returnToUri, $this->buildAuthorizationScope($scope, $requestRefreshToken), $browserBinding, ['nonce' => $nonce->value]);
     }
 
     /**
-     * Returns the current identity token and refresh token in a TokenSet
+     * Returns the identity token and refresh token of a finished authorization, and removes the authorization
      *
-     * @throws ConnectionException
-     * @throws ServiceException|\SodiumException
+     * The OAuth client hands out the authorization only once, and only to the browser which started it.
+     *
+     * @param string $authorizationHandle The handle from the return URI of the authorization
+     * @param array $cookies The cookies of the current request
+     * @throws ServiceException
+     * @throws UnknownAuthorizationHandleException
+     * @throws SodiumException
      */
-    public function getIdentityToken(string $authorizationIdentifier): TokenSet
+    public function getIdentityToken(string $authorizationHandle, array $cookies): TokenSet
     {
-        $authorization = $this->getAuthorization($authorizationIdentifier);
-        if (!$authorization instanceof Authorization) {
-            throw new ServiceException(sprintf('OpenID Connect Client: Authorization %s was not found', $authorizationIdentifier), 1567853403);
-        }
-        $accessToken = $authorization->getAccessToken();
-        if (!$accessToken) {
-            throw new ServiceException(sprintf('OpenID Connect Client: Authorization %s contained no access token', $authorizationIdentifier), 1567853441);
-        }
-        $tokenValues = $accessToken->getValues();
-        if (!isset($tokenValues['id_token'])) {
-            throw new ServiceException('OpenID Connect Client: No id_token found in values of current oAuth token', 1559208674);
-        }
+        $authorization = $this->oAuthClient->claimAuthorization($authorizationHandle, $cookies);
         try {
-            return new TokenSet(
-                IdentityToken::fromJwt($tokenValues['id_token']),
-                $accessToken->getRefreshToken()
-            );
-        } catch (\InvalidArgumentException $e) {
-            throw new ServiceException('OpenID Connect Client: Failed parsing identity token from JWT', 1602501992, $e);
+            $accessToken = $authorization->getAccessToken();
+            if (!$accessToken) {
+                throw new ServiceException('OpenID Connect Client: The finished authorization contained no access token', 1567853441);
+            }
+            $tokenValues = $accessToken->getValues();
+            if (!isset($tokenValues['id_token'])) {
+                throw new ServiceException('OpenID Connect Client: No id_token found in values of current oAuth token', 1559208674);
+            }
+            try {
+                // Identity providers only issue a refresh token if the login requested one and the provider allows it
+                return new TokenSet(
+                    IdentityToken::fromJwt($tokenValues['id_token']),
+                    $accessToken->getRefreshToken() ?? ''
+                );
+            } catch (InvalidArgumentException $e) {
+                throw new ServiceException('OpenID Connect Client: Failed parsing identity token from JWT', 1602501992, $e);
+            }
+        } finally {
+            try {
+                $this->oAuthClient->removeAuthorization($authorization->getAuthorizationId());
+            } catch (Exception $exception) {
+                // An exception thrown here would replace the one of the token check, and the garbage collection removes the authorization once it expires
+                $this->logger?->error(sprintf('OpenID Connect Client: Failed removing the claimed authorization of service "%s": %s', $this->serviceName, $exception->getMessage()), LogEnvironment::fromMethodName(__METHOD__));
+            }
         }
     }
 
@@ -320,7 +327,7 @@ final class OpenIdConnectClient
 
             try {
                 $response = json_decode($response->getBody()->getContents(), true, 512, JSON_THROW_ON_ERROR);
-            } catch (\JsonException $e) {
+            } catch (JsonException $e) {
                 throw new ServiceException(sprintf('OpenID Connect Client: Failed decoding response while retrieving JWKS from %s', $this->options['jwksUri']), 1739990452, $e);
             }
             if (!is_array($response) || !isset($response['keys'])) {
@@ -383,7 +390,7 @@ final class OpenIdConnectClient
      * @throws ServiceException
      * @throws ConnectionException
      */
-    public function refreshIdentityToken(IdentityToken $identityToken, string $refreshToken): TokenSet
+    public function refreshIdentityToken(string $refreshToken): TokenSet
     {
         $tokenEndpoint = $this->options['tokenEndpoint'];
         try {
@@ -393,8 +400,6 @@ final class OpenIdConnectClient
                     'client_id' => $this->settings['services'][$this->serviceName]['options']['clientId'],
                     'client_secret' => $this->settings['services'][$this->serviceName]['options']['clientSecret'],
                     'refresh_token' => $refreshToken,
-                    'prompt' => 'none',
-                    'id_token_hint' => $identityToken->asJwt()
                 ]
             ]);
         } catch (GuzzleException $e) {
@@ -403,17 +408,19 @@ final class OpenIdConnectClient
 
         try {
             $response = json_decode($response->getBody()->getContents(), true, 512, JSON_THROW_ON_ERROR);
-        } catch (\JsonException $e) {
+        } catch (JsonException $e) {
             throw new ServiceException(sprintf('OpenID Connect Client: Failed decoding response while refreshing identity token from %s', $tokenEndpoint), 1741193238, $e);
         }
-        if (!is_array($response) || !isset($response['id_token'])) {
+        if (!is_array($response) || !is_string($response['id_token'] ?? null)) {
             throw new ServiceException(sprintf('OpenID Connect Client: Invalid response data while refreshing identity token from %s', $tokenEndpoint), 1741193241);
         }
 
         try {
-            $result = new TokenSet(IdentityToken::fromJwt($response['id_token']), '');
-        } catch (\InvalidArgumentException $e) {
-            throw new ServiceException(sprintf('OpenID Connect Client: Could not  construct identity token from response data while refreshing identity token from %s', $tokenEndpoint), 1741271679, $e);
+            // Identity providers which rotate refresh tokens return a new one, and the previous one becomes invalid
+            $refreshToken = $response['refresh_token'] ?? '';
+            $result = new TokenSet(IdentityToken::fromJwt($response['id_token']), is_string($refreshToken) ? $refreshToken : '');
+        } catch (InvalidArgumentException $e) {
+            throw new ServiceException(sprintf('OpenID Connect Client: Could not construct identity token from response data while refreshing identity token from %s', $tokenEndpoint), 1741271679, $e);
         }
 
         return $result;
@@ -433,12 +440,16 @@ final class OpenIdConnectClient
             } catch (GuzzleException $e) {
                 throw new ConnectionException(sprintf('OpenID Connect Client: Failed discovering options at %s: %s', $discoveryUri, $e->getMessage()), 1554902567);
             }
-            $discoveredOptions = \GuzzleHttp\json_decode($response->getBody()->getContents(), true);
+            try {
+                $discoveredOptions = json_decode($response->getBody()->getContents(), true, 512, JSON_THROW_ON_ERROR);
+            } catch (JsonException) {
+                $discoveredOptions = null;
+            }
             if (!is_array($discoveredOptions)) {
                 throw new ConnectionException('OpenID Connect Client: Discovery endpoint returned invalid response.', 1554903349);
             }
             $this->discoveryCache->set($cacheIdentifier, $discoveredOptions);
-            $this->logger->info(sprintf('OpenID Connect Client: Auto-discovery via %s succeeded and stored into cache.', $discoveryUri), LogEnvironment::fromMethodName(__METHOD__));
+            $this->logger?->info(sprintf('OpenID Connect Client: Auto-discovery via %s succeeded and stored into cache.', $discoveryUri), LogEnvironment::fromMethodName(__METHOD__));
         }
 
         foreach ($discoveredOptions as $optionName => $optionValue) {
@@ -453,6 +464,16 @@ final class OpenIdConnectClient
      *
      * @throws ConnectionException
      */
+    /**
+     * A token which is renewed shortly before its expiration can't expire while a request uses it
+     */
+    private function expiresSoon(Authorization $authorization, AccessToken $accessToken): bool
+    {
+        // A token without an expiration time expires with its authorization, after the default token lifetime of the OAuth client
+        $expirationTimestamp = $accessToken->getExpires() ?? $authorization->getExpires()?->getTimestamp();
+        return $expirationTimestamp !== null && $expirationTimestamp <= time() + self::ACCESS_TOKEN_RENEWAL_MARGIN;
+    }
+
     private function getAuthorization(string $authorizationIdentifier): ?Authorization
     {
         try {
@@ -461,6 +482,12 @@ final class OpenIdConnectClient
             throw new ConnectionException(sprintf('OpenID Connect Client: Failed retrieving oAuth token %s: %s', $authorizationIdentifier, $exception->getMessage()), 1559202394);
         }
         return $authorization;
+    }
+
+    private function buildAuthorizationScope(string $scope, bool $requestRefreshToken): string
+    {
+        $requiredScopeIdentifiers = $requestRefreshToken ? ['openid', 'offline_access'] : ['openid'];
+        return trim(implode(' ', array_unique(array_merge(explode(' ', $scope), $requiredScopeIdentifiers))));
     }
 
     private function getJwksCacheId(): string

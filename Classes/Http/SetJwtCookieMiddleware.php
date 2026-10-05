@@ -2,11 +2,15 @@
 declare(strict_types=1);
 namespace Flownative\OpenIdConnect\Client\Http;
 
+use Flownative\OpenIdConnect\Client\Authentication\Nonce;
 use Flownative\OpenIdConnect\Client\Authentication\OpenIdConnectToken;
+use Flownative\OpenIdConnect\Client\CookieSettings;
 use Flownative\OpenIdConnect\Client\IdentityToken;
 use Flownative\OpenIdConnect\Client\OAuthClient;
 use GuzzleHttp\Psr7\Query;
+use InvalidArgumentException;
 use GuzzleHttp\Psr7\Utils;
+use Neos\Flow\Http\CacheControlDirectives;
 use Neos\Flow\Http\Cookie;
 use Neos\Flow\Log\Utility\LogEnvironment;
 use Neos\Flow\Security\Context as SecurityContext;
@@ -18,37 +22,14 @@ use Psr\Log\LoggerInterface;
 
 final class SetJwtCookieMiddleware implements MiddlewareInterface
 {
-    /**
-     * @var SecurityContext
-     */
-    private $securityContext;
-
-    /**
-     * @var LoggerInterface
-     */
-    private $logger;
-
-    /**
-     * @var array
-     */
-    private $options;
-
-    /**
-     * @var array
-     */
-    private $authenticationProviderConfiguration;
-
-    public function __construct(array $options, array $authenticationProviderConfiguration, SecurityContext $securityContext, LoggerInterface $logger)
-    {
-        $this->options = $options;
-        $this->authenticationProviderConfiguration = $authenticationProviderConfiguration;
-        $this->securityContext = $securityContext;
-        $this->logger = $logger;
+    public function __construct(
+        private array $options,
+        private readonly array $authenticationProviderConfiguration,
+        private readonly SecurityContext $securityContext,
+        private readonly LoggerInterface $logger,
+    ) {
     }
 
-    /**
-     * @return void
-     */
     public function initializeObject(): void
     {
         if (isset($this->options['cookieName'])) {
@@ -59,16 +40,8 @@ final class SetJwtCookieMiddleware implements MiddlewareInterface
             $this->logger->warning('OpenID Connect: Option "secureCookie" was used - please use "cookie.secure" instead.', LogEnvironment::fromMethodName(__METHOD__));
             $this->options['cookie']['secure'] = $this->options['secureCookie'];
         }
-        if (!isset($this->options['disableTrustedProxiesComponentCompatibility'])) {
-            $this->options['disableTrustedProxiesComponentCompatibility'] = false;
-        }
     }
 
-    /**
-     * @param ServerRequestInterface $request
-     * @param RequestHandlerInterface $handler
-     * @return ResponseInterface
-     */
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         $response = $handler->handle($request);
@@ -78,30 +51,36 @@ final class SetJwtCookieMiddleware implements MiddlewareInterface
             return $response;
         }
 
-        $cookieSecure = $this->options['cookie']['secure'] ?? true;
-        $cookieHttpOnly = $this->options['cookie']['httpOnly'] ?? false;
-        $cookieSameSite = $this->options['cookie']['sameSite'] ?? Cookie::SAMESITE_LAX;
+        $cookieSettings = CookieSettings::fromMiddlewareSettings($this->options);
 
         foreach ($this->securityContext->getAuthenticationTokensOfType(OpenIdConnectToken::class) as $token) {
+            // Requests with a bearer token don't touch the cookie. Setting it would make the browser send the token automatically, and
+            // removing it would end a login based on the cookie because of a failed bearer token.
+            if ($token->hasBearerAuthorizationHeader()) {
+                continue;
+            }
+            if ($token->getNonceCookieName() !== '') {
+                $response = $response->withAddedHeader('Set-Cookie', (string)Nonce::createRemovalCookie($token->getNonceCookieName(), $cookieSettings));
+            }
             $providerName = $token->getAuthenticationProviderName();
             $providerOptions = $this->authenticationProviderConfiguration[$token->getAuthenticationProviderName()]['providerOptions'] ?? [];
             $account = $this->securityContext->getAccountByAuthenticationProviderName($providerName);
-            $cookieName = $providerOptions['jwtCookieName'] ?? $this->options['cookie']['name'] ?? 'flownative_oidc_jwt';
+            $cookieName = $cookieSettings->getJwtCookieName($providerOptions);
             if ($account === null) {
                 if (isset($request->getCookieParams()[$cookieName])) {
                     $this->logger->debug(sprintf('OpenID Connect: No account is authenticated using the provider %s, removing JWT cookie "%s".', $providerName, $cookieName), LogEnvironment::fromMethodName(__METHOD__));
-                    $response = $this->removeJwtCookie($response, $cookieName, $cookieSecure, $cookieHttpOnly, $cookieSameSite);
+                    $response = $this->withoutSharedCaching($this->removeJwtCookie($response, $cookieName, $cookieSettings));
                 }
                 continue;
             }
             try {
                 $identityToken = IdentityToken::fromJwt($account->getCredentialsSource());
-            } catch (\InvalidArgumentException) {
+            } catch (InvalidArgumentException) {
                 $this->logger->error(sprintf('OpenID Connect: No identity token found in credentials source of account %s - could not set JWT cookie.', $account->getAccountIdentifier()), LogEnvironment::fromMethodName(__METHOD__));
                 continue;
             }
 
-            $response = $this->setJwtCookie($response, $cookieName, $cookieSecure, $cookieHttpOnly, $cookieSameSite, $identityToken->asJwt());
+            $response = $this->withoutSharedCaching($this->setJwtCookie($response, $cookieName, $cookieSettings, $identityToken->asJwt()));
         }
 
         // Note: A redirect with a Location header only works if the JWT cookie has a "lax" Same Site configuration. If Same Site of the
@@ -109,49 +88,54 @@ final class SetJwtCookieMiddleware implements MiddlewareInterface
         //
         // See also https://bugzilla.mozilla.org/show_bug.cgi?id=1465402
         // and https://web.dev/samesite-cookies-explained/
-        if ($cookieSameSite !== Cookie::SAMESITE_STRICT && !$response->hasHeader('Location')) {
+        //
+        // Error responses, like the page of a rejected login, must reach the browser unchanged. Redirecting them would start the rejected
+        // login again.
+        $isSuccessful = $response->getStatusCode() >= 200 && $response->getStatusCode() < 300;
+        if ($isSuccessful && $cookieSettings->sameSite !== Cookie::SAMESITE_STRICT && !$response->hasHeader('Location')) {
             return $this->withRedirectToRemoveOidcQueryParameters($request, $response);
         }
 
         return $response;
     }
 
-    /**
-     * @param ResponseInterface $response
-     * @param string $cookieName
-     * @param bool $secure
-     * @param bool $httpOnly
-     * @param string $sameSite
-     * @param string $jwt
-     * @return ResponseInterface
-     */
-    private function setJwtCookie(ResponseInterface $response, string $cookieName, bool $secure, bool $httpOnly, string $sameSite, string $jwt): ResponseInterface
+    private function setJwtCookie(ResponseInterface $response, string $cookieName, CookieSettings $cookieSettings, string $jwt): ResponseInterface
     {
-        $jwtCookie = new Cookie($cookieName, $jwt, 0, null, null, '/', $secure, $httpOnly, $sameSite);
+        $jwtCookie = new Cookie($cookieName, $jwt, 0, null, null, '/', $cookieSettings->secure, $cookieSettings->httpOnly, $cookieSettings->sameSite);
         return $response->withAddedHeader('Set-Cookie', (string)$jwtCookie);
     }
 
     /**
-     * @param ResponseInterface $response
-     * @param string $cookieName
-     * @param bool $secure
-     * @param bool $httpOnly
-     * @param string $sameSite
-     * @return ResponseInterface
+     * Makes sure that shared caches, like proxies or CDNs, don't store a response which sets or removes the JWT cookie
      */
-    private function removeJwtCookie(ResponseInterface $response, string $cookieName, bool $secure, bool $httpOnly, string $sameSite): ResponseInterface
+    private function withoutSharedCaching(ResponseInterface $response): ResponseInterface
     {
-        $emptyJwtCookie = new Cookie($cookieName, '', 1, null, null, '/', $secure, $httpOnly, $sameSite);
+        // Note: Flow's StandardsComplianceMiddleware parses the header with the same class, which keeps only one of "public", "private"
+        // and "no-cache". A response with "no-cache" therefore gets "no-store" instead of "private".
+        $cacheControlDirectives = CacheControlDirectives::fromRawHeader($response->getHeaderLine('Cache-Control'));
+        $cacheControlDirectives->removeDirective('s-maxage');
+        if ($cacheControlDirectives->getDirective('no-cache') !== null) {
+            $cacheControlDirectives->setDirective('no-store');
+        } else {
+            $cacheControlDirectives->setDirective('private');
+        }
+
+        // CDNs which support these headers prefer them over Cache-Control
+        return $response
+            ->withHeader('Cache-Control', (string)$cacheControlDirectives->getCacheControlHeaderValue())
+            ->withoutHeader('CDN-Cache-Control')
+            ->withoutHeader('Surrogate-Control');
+    }
+
+    private function removeJwtCookie(ResponseInterface $response, string $cookieName, CookieSettings $cookieSettings): ResponseInterface
+    {
+        $emptyJwtCookie = new Cookie($cookieName, '', 1, null, null, '/', $cookieSettings->secure, $cookieSettings->httpOnly, $cookieSettings->sameSite);
         return $response->withAddedHeader('Set-Cookie', (string)$emptyJwtCookie);
     }
 
     /**
      * Removes any `?flownative_oidc=<...>&flownative_oauth2_authorization_id_oidc=<...>` from the request URL
      * by triggering a redirect to the URL without those query parameters
-     *
-     * @param ServerRequestInterface $request
-     * @param ResponseInterface $response
-     * @return ResponseInterface
      */
     private function withRedirectToRemoveOidcQueryParameters(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {

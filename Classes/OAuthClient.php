@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Flownative\OpenIdConnect\Client;
 
+use Flownative\OAuth2\Client\OAuthClient as BaseOAuthClient;
 use Neos\Flow\Annotations as Flow;
 
 /**
@@ -20,14 +21,14 @@ use Neos\Flow\Annotations as Flow;
  * of OpenIdConnectClient as soon as the configuration options are needed
  * and if no such client has been injected yet.
  */
-class OAuthClient extends \Flownative\OAuth2\Client\OAuthClient
+class OAuthClient extends BaseOAuthClient
 {
-    public const SERVICE_TYPE= 'oidc';
+    public const string SERVICE_TYPE = 'oidc';
 
     /**
-     * @Flow\InjectConfiguration(path="http.baseUri", package="Neos.Flow")
      * @var string
      */
+    #[Flow\InjectConfiguration(path: 'http.baseUri', package: 'Neos.Flow')]
     protected $flowBaseUriSetting;
 
     private array $options = [];
@@ -89,6 +90,18 @@ class OAuthClient extends \Flownative\OAuth2\Client\OAuthClient
             throw new ConfigurationException(sprintf('Missing configuration clientId for service "%s" (%s). Configure it explicitly via settings.', $this->getServiceName(), self::getServiceType()), 1739990068);
         }
         return $this->options['clientId'];
+    }
+
+    /**
+     * @throws ConfigurationException
+     */
+    public function getClientSecret(string $clientId): string
+    {
+        $this->initializeOptionsIfNeeded();
+        if ($clientId !== ($this->options['clientId'] ?? null) || !isset($this->options['clientSecret']) || !is_string($this->options['clientSecret'])) {
+            throw new ConfigurationException(sprintf('Missing configuration clientSecret for client id "%s" of service "%s" (%s). Configure it explicitly via settings.', $clientId, $this->getServiceName(), self::getServiceType()), 1789395653);
+        }
+        return $this->options['clientSecret'];
     }
 
     public static function getServiceType(): string
