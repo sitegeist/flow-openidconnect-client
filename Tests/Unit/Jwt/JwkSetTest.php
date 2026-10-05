@@ -10,14 +10,15 @@ use Flownative\OpenIdConnect\Client\Jwt\SignatureVerificationKeyCouldNotBeResolv
 use Flownative\OpenIdConnect\Client\Jwt\SignatureVerificationKeyIsAmbiguous;
 use Flownative\OpenIdConnect\Client\Jwt\SupportedAlgorithm;
 use PHPUnit\Framework\Assert;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class JwkSetTest extends TestCase
 {
     /**
      * @param array<int,array<string,mixed>> $values
-     * @dataProvider valuesProvider
      */
+    #[DataProvider('valuesProvider')]
     public function testFromArray(array $values, JwkSet $expectedSet): void
     {
         $actualSet = JwkSet::fromArray($values);
@@ -67,9 +68,7 @@ class JwkSetTest extends TestCase
         ];
     }
 
-    /**
-     * @dataProvider keySetProvider
-     */
+    #[DataProvider('keySetProvider')]
     public function testRequireSignatureVerificationKey(
         JwkSet $subject,
         ?string $keyId,

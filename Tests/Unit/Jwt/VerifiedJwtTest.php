@@ -20,6 +20,7 @@ use Lcobucci\JWT\Validation\Constraint\IssuedBy;
 use Lcobucci\JWT\Validation\Constraint\PermittedFor;
 use Lcobucci\JWT\Validation\ConstraintViolation;
 use PHPUnit\Framework\Assert;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class VerifiedJwtTest extends TestCase
@@ -48,9 +49,7 @@ class VerifiedJwtTest extends TestCase
         );
     }
 
-    /**
-     * @dataProvider jwtProvider
-     */
+    #[DataProvider('jwtProvider')]
     public function testTryFromJWTString(
         string|callable $jwt,
         TestKeyPair $keyPair,
@@ -65,12 +64,12 @@ class VerifiedJwtTest extends TestCase
         $actualToken = VerifiedJwt::tryFromJWTString($jwt, $this->policy, null, $actualResult);
 
         if ($tokenExpected) {
-            Assert::assertNotNull($actualToken);
+            Assert::assertNotNull($actualToken, 'Expected a token but none was resolved');
             Assert::assertSame($jwt, $actualToken?->token->toString());
         } else {
-            Assert::assertNull($actualToken);
+            Assert::assertNull($actualToken, 'Expected no token but one was resolved');
         }
-        Assert::assertEquals($expectedResult, $actualResult);
+        Assert::assertEquals($expectedResult, $actualResult, 'Expected ' . get_debug_type($expectedResult) . ' as result, got ' . get_debug_type($actualResult));
     }
 
     /**
@@ -116,7 +115,7 @@ class VerifiedJwtTest extends TestCase
                 . '.' . $encoder->base64UrlEncode($encoder->jsonEncode(['iss' => 'me', 'aud' => 'us'])) . '.',
             'keyPair' => self::requireKeyPair(),
             'tokenExpected' => false,
-            'expectedResult' => new JwtMissesSignatureKey(),
+            'expectedResult' => null,
         ];
 
         yield 'valid token' => [

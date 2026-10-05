@@ -16,6 +16,7 @@ use Flownative\OpenIdConnect\Client\Tests\Unit\Jwt\TestKeyPair;
 use Lcobucci\JWT\Token\Builder;
 use Neos\Flow\Utility\Algorithms;
 use PHPUnit\Framework\Assert;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class LogoutTokenTest extends TestCase
@@ -30,9 +31,7 @@ class LogoutTokenTest extends TestCase
      */
     private static array $policies = [];
 
-    /**
-     * @dataProvider jwtProvider
-     */
+    #[DataProvider('jwtProvider')]
     public function testCreate(
         VerifiedJwt $token,
         ?LogoutTokenProperties $expectedTokenProperties,

@@ -7,13 +7,12 @@ namespace Flownative\OpenIdConnect\Client\Tests\Unit\Jwt;
 use Flownative\OpenIdConnect\Client\Jwt\JwkValidationFailed;
 use Flownative\OpenIdConnect\Client\Jwt\SupportedAlgorithm;
 use PHPUnit\Framework\Assert;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class SupportedAlgorithmTest extends TestCase
 {
-    /**
-     * @dataProvider keyTypeAndCurveProvider
-     */
+    #[DataProvider('keyTypeAndCurveProvider')]
     public function testFromKeyTypeAndCurve(
         string $keyType,
         ?string $curve,

@@ -368,8 +368,8 @@ class OpenIdConnectProviderTest extends TestCase
     {
         $token = self::createTokenForBearerJwt(self::createJwt());
 
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionCode(1789122175);
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionCode(1788189107);
         $this->createProvider(['roles' => ['Some.Package:User']], serviceOptions: ['issuer' => ''])->authenticate($token);
     }
 

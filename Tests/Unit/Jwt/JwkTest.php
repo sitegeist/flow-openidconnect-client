@@ -11,14 +11,15 @@ use Lcobucci\JWT\Encoding\JoseEncoder;
 use Lcobucci\JWT\Token\Parser;
 use Lcobucci\JWT\Validation\Validator;
 use PHPUnit\Framework\Assert;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class JwkTest extends TestCase
 {
     /**
      * @param array<string,mixed> $values
-     * @dataProvider invalidValuesProvider
      */
+    #[DataProvider('invalidValuesProvider')]
     public function testFromArrayRejectsInvalidValues(
         array $values,
         ?\Throwable $expectedException,
@@ -77,9 +78,7 @@ class JwkTest extends TestCase
         ];
     }
 
-    /**
-     * @dataProvider algorithmsProvider
-     */
+    #[DataProvider('algorithmsProvider')]
     public function testFromArraySupportsAllSupportedAlgorithms(
         SupportedAlgorithm $algorithm,
     ): void {
@@ -150,9 +149,7 @@ class JwkTest extends TestCase
         Jwk::fromArray(['kty' => 'RSA', 'alg' => 'RS256']);
     }
 
-    /**
-     * @dataProvider keyProvider
-     */
+    #[DataProvider('keyProvider')]
     public function testQualifiesForSignatureVerification(
         Jwk $key,
         ?string $keyId,
